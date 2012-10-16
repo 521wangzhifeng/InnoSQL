@@ -5,7 +5,6 @@ InnoSQL是MySQL数据库的一个分支版本，其完全兼容于Oracle MySQL�
 
  * Homepage: <https://github.com/NetEase/InnoSQL>
  * Wiki: <https://github.com/NetEase/InnoSQL/wiki/>
- * Issues: <https://github.com/NetEase/InnoSQL/issues/>
  * Tags: C, C++, MySQL, InnoDB
 
 目前主要包括的特性有:
