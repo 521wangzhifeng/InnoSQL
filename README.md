@@ -12,26 +12,26 @@ InnoSQL是杭研开发维护的MySQL分支，目前基于MySQL 5.5。InnoSQL的�
 ---------------------
 高可用特性：
 
-1. virtual sync replication with group commit，高性能同步复制
-2. crash safe replication slave，宕机主从数据依然一致
-3. slave batch commit 极大减少slave与master的延时，基本达到实时同步
-4. InnoDB share memory，缓冲池快速预热技术
+* virtual sync replication with group commit，高性能同步复制
+* crash safe replication slave，宕机主从数据依然一致
+* slave batch commit 极大减少slave与master的延时，基本达到实时同步
+* InnoDB share memory，缓冲池快速预热技术
 
 高性能特性：
 
-1. InnoDB flash cache 将SSD作为L2cache，见percona CTO对此测试的结果
-2. InnoDB IO enhance 对于InnoDB的IO进行优化，尤其是SSD
-3. InnoDB死锁检测优化
+* InnoDB flash cache 将SSD作为L2cache，见percona CTO对此测试的结果
+* InnoDB IO enhance 对于InnoDB的IO进行优化，尤其是SSD
+* InnoDB死锁检测优化
 
 运维特性：
 
-1. 观察InnoDB undo log信息
-2. 观察不同刷新方式的的次数
-3. 观察master thread和purge thread的线程ID
-4. slow log记录SQL语句的物理与逻辑IO次数
-5. binlog记录SQL语句执行者的user和ip信息
-6. Profiler功能，对用户资源进行限制
-7. Role Table 将用户添加到角色表中，便于对用户的管理
+* 观察InnoDB undo log信息
+* 观察不同刷新方式的的次数
+* 观察master thread和purge thread的线程ID
+* slow log记录SQL语句的物理与逻辑IO次数
+* binlog记录SQL语句执行者的user和ip信息
+* Profiler功能，对用户资源进行限制
+* Role Table 将用户添加到角色表中，便于对用户的管理
 
 Getting Started
 ----------------
