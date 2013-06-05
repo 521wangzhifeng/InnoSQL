@@ -3,8 +3,8 @@ InnoSQL - A branch version of MySQL
 
 InnoSQL是杭研开发维护的MySQL分支，目前基于MySQL 5.5。InnoSQL的主要目标是提供更好的性能以及高可用性，同时便于DBA的运维以及监控管理。其完全兼容于原版MySQL数据库，所有添加的功能都是动态的。若不开启这些功能，与原版MySQL数据库的工作方式完全相同。
 
- * Homepage: <https://github.com/NetEase/InnoSQL>
- * Wiki: <https://github.com/NetEase/InnoSQL/wiki/>
+ * Homepage: <http://mysql.netease.com/>
+ * Wiki: <http://mysql.netease.com/doc/index.html>
  * Issues: <https://github.com/NetEase/InnoSQL/issues/>
  * Tags: C, C++, MySQL, InnoDB
 
