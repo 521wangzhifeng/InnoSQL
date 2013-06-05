@@ -1,0 +1,3690 @@
+Index: mysql-test/suite/innosql/r/rpl_batch_commit.result
+===================================================================
+--- mysql-test/suite/innosql/r/rpl_batch_commit.result	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/innosql/r/rpl_batch_commit.result	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,96 @@
++include/master-slave.inc
++[connection master]
++"-----------batch Query commit-------------"
++create table t(a int);
++set global batch_commit_max=3;
++set global debug="+d,skip_relay_end";
++insert into t select 1;
++insert into t select 2;
++include/wait_for_slave_param.inc [Read_Master_Log_Pos]
++ok
++insert into t select 3;
++select * from t;
++a
++1
++2
++3
++set global debug="";
++delete from t;
++"-----------batch Xid commit-------------"
++"-----rotate change master log file-----"
++stop slave SQL_THREAD;
++include/wait_for_slave_sql_to_stop.inc
++set global batch_commit_max=4;
++use test;
++insert into t select 6;
++insert into t select 7;
++flush logs;
++start slave SQL_THREAD;
++include/wait_for_slave_sql_to_start.inc
++select a from t;
++a
++6
++7
++ok
++delete from t;
++stop slave SQL_THREAD;
++include/wait_for_slave_sql_to_stop.inc
++set global batch_commit_max=4;
++use test;
++insert into t select 8;
++insert into t select 9;
++flush logs;
++insert into t select 10;
++insert into t select 11;
++start slave SQL_THREAD;
++include/wait_for_slave_sql_to_start.inc
++select a from t;
++a
++8
++9
++10
++11
++ok
++delete from t;
++"---------reach_relay_log_end------------"
++stop slave;
++include/wait_for_slave_to_stop.inc
++set global batch_commit_max=10;
++use test;
++insert into t select 4;
++flush logs;
++start slave;
++include/wait_for_slave_to_start.inc
++use test;
++select a from t;
++a
++4
++stop slave;
++include/wait_for_slave_to_stop.inc
++use test;
++create table t1(c int);
++flush logs;
++start slave;
++include/wait_for_slave_to_start.inc
++use test;
++show tables;
++Tables_in_test
++t
++t1
++drop table t1;
++stop slave SQL_THREAD;
++include/wait_for_slave_sql_to_stop.inc
++use test;
++insert into t select 5;
++include/wait_for_slave_param.inc [Read_Master_Log_Pos]
++flush relay logs;
++start slave SQL_THREAD;
++include/wait_for_slave_sql_to_start.inc
++select a from t;
++a
++4
++5
++"-----------------clean-----------------"
++drop table t;
++set global batch_commit_max=1;
++include/rpl_end.inc
+Index: mysql-test/suite/innosql/t/rpl_batch_commit-slave.opt
+===================================================================
+--- mysql-test/suite/innosql/t/rpl_batch_commit-slave.opt	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/innosql/t/rpl_batch_commit-slave.opt	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1 @@
++--enable-table-relay-info
+Index: mysql-test/suite/innosql/t/rpl_batch_commit.test
+===================================================================
+--- mysql-test/suite/innosql/t/rpl_batch_commit.test	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/innosql/t/rpl_batch_commit.test	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,158 @@
++--source include/master-slave.inc
++echo "-----------batch Query commit-------------";
++connection master;
++create table t(a int);
++sync_slave_with_master;
++connection slave;
++let $old_value = query_get_value("select @@batch_commit_max",@@batch_commit_max,1);
++set global batch_commit_max=3;
++set global debug="+d,skip_relay_end";
++connection master;
++let $master_pos1= query_get_value("show master status",Position,1);
++insert into t select 1;
++insert into t select 2;
++let $master_pos2= query_get_value("show master status",Position,1);
++connection slave;
++let $slave_param=Read_Master_Log_Pos;
++let $slave_param_value=$master_pos2;
++source include/wait_for_slave_param.inc;
++let $relay_master_pos= query_get_value("show slave status",Exec_Master_Log_Pos,1);
++if($master_pos1==$relay_master_pos)
++{
++  echo ok;
++}
++
++connection master;
++insert into t select 3;
++sync_slave_with_master;
++select * from t;
++
++set global debug="";
++connection master;
++delete from t;
++sync_slave_with_master;
++echo "-----------batch Xid commit-------------";
++
++echo "-----rotate change master log file-----";
++connection slave;
++stop slave SQL_THREAD;
++source include/wait_for_slave_sql_to_stop.inc;
++set global batch_commit_max=4;
++connection master;
++use test;
++insert into t select 6;
++insert into t select 7;
++flush logs;
++let $master_log_file= query_get_value("show master status",File,1);
++connection slave;
++start slave SQL_THREAD;
++source include/wait_for_slave_sql_to_start.inc;
++connection master;
++sync_slave_with_master;
++select a from t;
++replace_regex /^\s*// /$\s*//;
++let $exc_master_log_file= query_get_value("show slave status",Relay_Master_Log_File,1);
++if($master_log_file==$exc_master_log_file)
++{
++  echo ok;
++}
++if($master_log_file!=$exc_master_log_file)
++{
++  echo wrong;
++}
++connection master;
++delete from t;
++sync_slave_with_master;
++
++connection slave;
++stop slave SQL_THREAD;
++source include/wait_for_slave_sql_to_stop.inc;
++set global batch_commit_max=4;
++connection master;
++use test;
++insert into t select 8;
++insert into t select 9;
++flush logs;
++insert into t select 10;
++insert into t select 11;
++let $master_log_file= query_get_value("show master status",File,1);
++connection slave;
++start slave SQL_THREAD;
++source include/wait_for_slave_sql_to_start.inc;
++connection master;
++sync_slave_with_master;
++select a from t;
++let $exc_master_log_file= query_get_value("show slave status",Relay_Master_Log_File,1);
++if($master_log_file==$exc_master_log_file)
++{
++  echo ok;
++}
++if($master_log_file!=$exc_master_log_file)
++{
++  echo wrong;
++}
++connection master;
++delete from t;
++sync_slave_with_master;
++
++echo "---------reach_relay_log_end------------";
++connection slave;
++stop slave;
++source include/wait_for_slave_to_stop.inc;
++set global batch_commit_max=10;
++
++connection master;
++use test;
++insert into t select 4;
++flush logs;
++connection slave;
++start slave;
++source include/wait_for_slave_to_start.inc;
++connection master;
++sync_slave_with_master;
++use test;
++select a from t;
++
++connection slave;
++stop slave;
++source include/wait_for_slave_to_stop.inc;
++connection master;
++use test;
++create table t1(c int);
++flush logs;
++connection slave;
++start slave;
++source include/wait_for_slave_to_start.inc;
++connection master;
++sync_slave_with_master;
++use test;
++show tables;
++connection master;
++drop table t1;
++sync_slave_with_master;
++
++connection slave;
++stop slave SQL_THREAD;
++source include/wait_for_slave_sql_to_stop.inc;
++connection master;
++use test;
++insert into t select 5;
++let $file_pos= query_get_value("show master status",Position,1);
++connection slave;
++let $slave_param=Read_Master_Log_Pos;
++let $slave_param_value=$file_pos;
++source include/wait_for_slave_param.inc;
++flush relay logs;
++start slave SQL_THREAD;
++source include/wait_for_slave_sql_to_start.inc;
++connection master;
++sync_slave_with_master;
++select a from t;
++
++echo "-----------------clean-----------------";
++connection master;
++drop table t;
++sync_slave_with_master;
++let $error = query_get_value("show slave status",Last_SQL_Error,1);
++eval set global batch_commit_max=$old_value;
++--source include/rpl_end.inc
+Index: mysql-test/suite/sys_vars/r/batch_commit_max_basic.result
+===================================================================
+--- mysql-test/suite/sys_vars/r/batch_commit_max_basic.result	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/sys_vars/r/batch_commit_max_basic.result	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,3 @@
++select @@global.batch_commit_max;
++@@global.batch_commit_max
++1
+Index: mysql-test/suite/sys_vars/r/enable_table_relay_info_basic.result
+===================================================================
+--- mysql-test/suite/sys_vars/r/enable_table_relay_info_basic.result	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/sys_vars/r/enable_table_relay_info_basic.result	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,6 @@
++select @@global.enable_table_relay_info;
++@@global.enable_table_relay_info
++0
++"--------------read only-------------"
++--error ER_INCORRECT_GLOBAL_LOCAL_VAR
++set global.enable_table_relay_info=1
+Index: mysql-test/suite/sys_vars/t/enable_table_relay_info_basic.test
+===================================================================
+--- mysql-test/suite/sys_vars/t/enable_table_relay_info_basic.test	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/sys_vars/t/enable_table_relay_info_basic.test	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,6 @@
++
++select @@global.enable_table_relay_info;
++
++echo "--------------read only-------------"
++--error ER_INCORRECT_GLOBAL_LOCAL_VAR
++set global.enable_table_relay_info=1;
+Index: mysql-test/suite/sys_vars/t/batch_commit_max_basic.test
+===================================================================
+--- mysql-test/suite/sys_vars/t/batch_commit_max_basic.test	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ mysql-test/suite/sys_vars/t/batch_commit_max_basic.test	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,2 @@
++
++select @@global.batch_commit_max;
+Index: mysql-test/mysql-test-run.pl
+===================================================================
+--- mysql-test/mysql-test-run.pl	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ mysql-test/mysql-test-run.pl	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -163,7 +163,7 @@
+ 
+ # If you add a new suite, please check TEST_DIRS in Makefile.am.
+ #
+-my $DEFAULT_SUITES= "main,sys_vars,binlog,federated,rpl,innodb,perfschema";
++my $DEFAULT_SUITES= "main,sys_vars,binlog,federated,rpl,innodb,perfschema,innosql";
+ my $opt_suites;
+ 
+ our $opt_verbose= 0;  # Verbose output, enable with --verbose
+Index: mysys/array.c
+===================================================================
+--- mysys/array.c	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ mysys/array.c	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -92,7 +92,7 @@
+     FALSE	Ok
+ */
+ 
+-my_bool insert_dynamic(DYNAMIC_ARRAY *array, uchar* element)
++my_bool insert_dynamic(DYNAMIC_ARRAY *array, const void *element)
+ {
+   uchar* buffer;
+   if (array->elements == array->max_element)
+Index: scripts/mysql_system_tables.sql
+===================================================================
+--- scripts/mysql_system_tables.sql	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ scripts/mysql_system_tables.sql	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -100,6 +100,7 @@
+ 
+ CREATE TABLE IF NOT EXISTS ndb_binlog_index (Position BIGINT UNSIGNED NOT NULL, File VARCHAR(255) NOT NULL, epoch BIGINT UNSIGNED NOT NULL, inserts BIGINT UNSIGNED NOT NULL, updates BIGINT UNSIGNED NOT NULL, deletes BIGINT UNSIGNED NOT NULL, schemaops BIGINT UNSIGNED NOT NULL, PRIMARY KEY(epoch)) ENGINE=MYISAM;
+ 
++CREATE TABLE IF NOT EXISTS slave_relay_log_info (key_id INTEGER UNSIGNED NOT NULL, Number_of_lines INTEGER UNSIGNED NOT NULL, Relay_log_name TEXT CHARACTER SET utf8 COLLATE utf8_bin NOT NULL, Relay_log_pos BIGINT UNSIGNED NOT NULL, Master_log_name TEXT CHARACTER SET utf8 COLLATE utf8_bin NOT NULL, Master_log_pos BIGINT UNSIGNED NOT NULL, PRIMARY KEY(key_id)) ENGINE=INNODB DEFAULT CHARSET=utf8 COMMENT 'Relay Log Information';
+ --
+ -- PERFORMANCE SCHEMA INSTALLATION
+ -- Note that this script is also reused by mysql_upgrade,
+Index: scripts/mysql_install_db.sh
+===================================================================
+--- scripts/mysql_install_db.sh	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ scripts/mysql_install_db.sh	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -394,7 +394,7 @@
+ # Configure mysqld command line
+ mysqld_bootstrap="${MYSQLD_BOOTSTRAP-$mysqld}"
+ mysqld_install_cmd_line="$mysqld_bootstrap $defaults $mysqld_opt --bootstrap \
+-  --basedir=$basedir --datadir=$ldata --log-warnings=0 --loose-skip-innodb \
++  --basedir=$basedir --datadir=$ldata --log-warnings=0 \
+   --loose-skip-ndbcluster $args --max_allowed_packet=8M \
+   --default-storage-engine=myisam \
+   --net_buffer_length=16K"
+Index: storage/innobase/handler/ha_innodb.cc
+===================================================================
+--- storage/innobase/handler/ha_innodb.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ storage/innobase/handler/ha_innodb.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -2765,7 +2765,7 @@
+ 
+ 		/* We were instructed to commit the whole transaction, or
+ 		this is an SQL statement end and autocommit is on */
+-
++		DBUG_PRINT("rlh",("do transaction commit"));
+ 		/* We need current binlog position for ibbackup to work.
+ 		Note, the position is current because of
+ 		prepare_commit_mutex */
+@@ -2825,10 +2825,10 @@
+ 
+ 		/* Now do a write + flush of logs. */
+ 		trx_commit_complete_for_mysql(trx);
+-	} else {
++	} else {	
+ 		/* We just mark the SQL statement ended and do not do a
+ 		transaction commit */
+-
++		DBUG_PRINT("rlh",("mark sql ended"));
+ 		/* If we had reserved the auto-inc lock for some
+ 		table in this SQL statement we release it now */
+ 
+@@ -10377,17 +10377,17 @@
+ 	XID*		xid)	/*!< in: X/Open XA transaction identification */
+ {
+ 	trx_t*	trx;
+-
++	DBUG_ENTER("innobase_commit_by_xid");
+ 	DBUG_ASSERT(hton == innodb_hton_ptr);
+-
++	DBUG_PRINT("rlh",("innobase_commit_by_xid"));
+ 	trx = trx_get_trx_by_xid(xid);
+ 
+ 	if (trx) {
+ 		innobase_commit_low(trx);
+ 		trx_free_for_background(trx);
+-		return(XA_OK);
++		DBUG_RETURN(XA_OK);
+ 	} else {
+-		return(XAER_NOTA);
++		DBUG_RETURN(XAER_NOTA);
+ 	}
+ }
+ 
+Index: include/my_sys.h
+===================================================================
+--- include/my_sys.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ include/my_sys.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -763,7 +763,7 @@
+ /* init_dynamic_array() function is deprecated */
+ extern my_bool init_dynamic_array(DYNAMIC_ARRAY *array, uint element_size,
+                                   uint init_alloc, uint alloc_increment);
+-extern my_bool insert_dynamic(DYNAMIC_ARRAY *array,uchar * element);
++extern my_bool insert_dynamic(DYNAMIC_ARRAY *array,const void * element);
+ extern uchar *alloc_dynamic(DYNAMIC_ARRAY *array);
+ extern uchar *pop_dynamic(DYNAMIC_ARRAY*);
+ extern my_bool set_dynamic(DYNAMIC_ARRAY *array,uchar * element,uint array_index);
+Index: sql/slave.cc
+===================================================================
+--- sql/slave.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/slave.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -52,6 +52,7 @@
+                                                 // Create_file_log_event,
+                                                 // Format_description_log_event
+ 
++#include "server_ids.h"
+ #ifdef HAVE_REPLICATION
+ 
+ #include "rpl_tblmap.h"
+@@ -522,10 +523,13 @@
+       thd_proc_info(current_thd, "Flushing relay-log info file.");
+     if (flush_relay_log_info(&mi->rli))
+       DBUG_RETURN(ER_ERROR_DURING_FLUSH_LOGS);
+-    
+-    if (my_sync(mi->rli.info_fd, MYF(MY_WME)))
+-      DBUG_RETURN(ER_ERROR_DURING_FLUSH_LOGS);
+-
++	
++    if (mi->rli.info_fd >= 0)
++    { 
++      if (my_sync(mi->rli.info_fd, MYF(MY_WME)))
++        DBUG_RETURN(ER_ERROR_DURING_FLUSH_LOGS);
++    }
++	
+     mysql_mutex_unlock(log_lock);
+   }
+   if (thread_mask & (SLAVE_IO|SLAVE_FORCE_ALL))
+@@ -2293,6 +2297,7 @@
+ int apply_event_and_update_pos(Log_event* ev, THD* thd, Relay_log_info* rli)
+ {
+   int exec_res= 0;
++  bool no_skip_event= true;
+ 
+   DBUG_ENTER("apply_event_and_update_pos");
+ 
+@@ -2337,10 +2342,15 @@
+ 
+   int reason= ev->shall_skip(rli);
+   if (reason == Log_event::EVENT_SKIP_COUNT)
+-    sql_slave_skip_counter= --rli->slave_skip_counter;
++    {
++	  sql_slave_skip_counter= --rli->slave_skip_counter;
++	  no_skip_event=false;
++	}
+   mysql_mutex_unlock(&rli->data_lock);
+   if (reason == Log_event::EVENT_SKIP_NOT)
+-    exec_res= ev->apply_event(rli);
++    {
++		DBUG_PRINT("rlh",("%s",ev->get_type_str()));
++		exec_res= ev->apply_event(rli);}
+ 
+ #ifndef DBUG_OFF
+   /*
+@@ -2366,7 +2376,10 @@
+   DBUG_PRINT("info", ("apply_event error = %d", exec_res));
+   if (exec_res == 0)
+   {
+-    int error= ev->update_pos(rli);
++    int error= 0;
++	if(!(ev->get_type_code()==XID_EVENT && 
++		   rli->is_transactional() && no_skip_event))
++	  error = ev->update_pos(rli);
+ #ifdef HAVE_purify
+     if (!rli->is_fake)
+ #endif
+@@ -3870,6 +3883,17 @@
+   mysql_mutex_lock(&mi->data_lock);
+ 
+   switch (buf[EVENT_TYPE_OFFSET]) {
++	/*
++	  record newest commit position in master binlog
++	*/
++  case QUERY_EVENT:
++  case XID_EVENT:
++	{
++	  mi->master_last_commit_pos =(my_off_t)uint4korr(buf + LOG_POS_OFFSET);
++	  DBUG_PRINT("cccc",("master_last_commit_Pos:%lld",mi->master_last_commit_pos));
++	  inc_pos= event_len;
++	  break;
++	}
+   case STOP_EVENT:
+     /*
+       We needn't write this event to the relay log. Indeed, it just indicates a
+@@ -4205,8 +4229,8 @@
+   mysql_options(mysql, MYSQL_SET_CHARSET_DIR, (char *) charsets_dir);
+ 
+   /* Set MYSQL_PLUGIN_DIR in case master asks for an external authentication plugin */
+-  if (opt_plugin_dir_ptr && *opt_plugin_dir_ptr)
+-    mysql_options(mysql, MYSQL_PLUGIN_DIR, opt_plugin_dir_ptr);
++  if (opt_plugin_dir_ptr && *opt_plugin_dir_ptr)
++    mysql_options(mysql, MYSQL_PLUGIN_DIR, opt_plugin_dir_ptr);
+ 
+   /* we disallow empty users */
+   if (mi->user == NULL || mi->user[0] == 0)
+@@ -4395,44 +4419,12 @@
+ 
+ bool flush_relay_log_info(Relay_log_info* rli)
+ {
+-  bool error=0;
+   DBUG_ENTER("flush_relay_log_info");
+ 
+-  if (unlikely(rli->no_storage))
+-    DBUG_RETURN(0);
+-
+-  IO_CACHE *file = &rli->info_file;
+-  char buff[FN_REFLEN*2+22*2+4], *pos;
+-
+-  my_b_seek(file, 0L);
+-  pos=strmov(buff, rli->group_relay_log_name);
+-  *pos++='\n';
+-  pos=longlong2str(rli->group_relay_log_pos, pos, 10);
+-  *pos++='\n';
+-  pos=strmov(pos, rli->group_master_log_name);
+-  *pos++='\n';
+-  pos=longlong2str(rli->group_master_log_pos, pos, 10);
+-  *pos='\n';
+-  if (my_b_write(file, (uchar*) buff, (size_t) (pos-buff)+1))
+-    error=1;
+-  if (flush_io_cache(file))
+-    error=1;
+-  if (sync_relayloginfo_period &&
+-      !error &&
+-      ++(rli->sync_counter) >= sync_relayloginfo_period)
+-  {
+-    if (my_sync(rli->info_fd, MYF(MY_WME)))
+-      error=1;
+-    rli->sync_counter= 0;
+-  }
+-  /* 
+-    Flushing the relay log is done by the slave I/O thread 
+-    or by the user on STOP SLAVE. 
+-   */
++  bool error=rli->flush_info();
+   DBUG_RETURN(error);
+ }
+ 
+-
+ /*
+   Called when we notice that the current "hot" log got rotated under our feet.
+ */
+@@ -5037,3 +5029,61 @@
+ */
+ 
+ #endif /* HAVE_REPLICATION */
++
++Server_ids::Server_ids()
++{
++  my_init_dynamic_array(&server_ids, sizeof(::server_id), 16, 16);
++}
++
++Server_ids::~Server_ids()
++{
++  delete_dynamic(&server_ids);
++}
++
++bool Server_ids::unpack_server_ids(char *param_server_ids)
++{
++  char *token= NULL, *last= NULL;
++  uint num_items= 0;
++ 
++  DBUG_ENTER("Server_ids::unpack_server_ids");
++
++  token= strtok_r((char *)const_cast<const char*>(param_server_ids),
++                  " ", &last);
++
++  if (token == NULL)
++    DBUG_RETURN(TRUE);
++
++  num_items= atoi(token);
++  for (uint i=0; i < num_items; i++)
++  {
++    token= strtok_r(NULL, " ", &last);
++    if (token == NULL)
++      DBUG_RETURN(TRUE);
++    else
++    {
++      ulong val= atol(token);
++      insert_dynamic(&server_ids, &val);
++    }
++  }
++  DBUG_RETURN(FALSE);
++}
++
++bool Server_ids::pack_server_ids(String *buffer)
++{
++  DBUG_ENTER("Server_ids::pack_server_ids");
++
++  if (buffer->set_int(server_ids.elements, FALSE, &my_charset_bin))
++    DBUG_RETURN(TRUE);
++
++  for (ulong i= 0;
++       i < server_ids.elements; i++)
++  {
++    ulong s_id;
++    get_dynamic(&server_ids, (uchar*) &s_id, i);
++    if (buffer->append(" ") ||
++        buffer->append_ulonglong(s_id))
++      DBUG_RETURN(TRUE);
++  }
++
++  DBUG_RETURN(FALSE);
++}
+Index: sql/sql_parse.h
+===================================================================
+--- sql/sql_parse.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_parse.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -81,6 +81,7 @@
+ bool sqlcom_can_generate_row_events(const THD *thd);
+ bool is_update_query(enum enum_sql_command command);
+ bool is_log_table_write_query(enum enum_sql_command command);
++bool is_rpl_info_table_write_query(enum enum_sql_command command);
+ bool alloc_query(THD *thd, const char *packet, uint packet_length);
+ void mysql_init_select(LEX *lex);
+ void mysql_parse(THD *thd, char *rawbuf, uint length,
+Index: sql/rpl_info_table_access.h
+===================================================================
+--- sql/rpl_info_table_access.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_table_access.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,57 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++#ifndef RPL_INFO_TABLE_ACCESS_H
++#define RPL_INFO_TABLE_ACCESS_H
++
++#include "my_global.h"
++#include "sql_priv.h"
++#include <table.h>
++#include <key.h>
++#include <sql_base.h>
++#include "rpl_info_handler.h"
++#include "rpl_info_values.h"
++
++#define FOUND_ID 1
++#define NOT_FOUND_ID 2
++#define ERROR_ID 3
++
++class Rpl_info_table_access
++{
++public:
++  Rpl_info_table_access() { };
++  virtual ~Rpl_info_table_access() { };
++
++  bool open_table(THD* thd, const LEX_STRING dbstr, const LEX_STRING tbstr,
++                  uint max_num_field, enum thr_lock_type lock_type,
++                  TABLE** table, Open_tables_backup* backup);
++  bool close_table(THD* thd, TABLE* table, Open_tables_backup* backup,
++                   bool error);
++  int find_info_for_server_id(ulong server_id, uint idx, Rpl_info_values *,
++                                              TABLE *table);
++  bool load_info_values(uint max_num_field, Field **fields,
++                        Rpl_info_values *field_values);
++  bool store_info_values(uint max_num_field, Field **fields,
++                         Rpl_info_values *field_values);
++  THD *create_thd();
++  bool drop_thd(THD* thd);
++
++private:
++  THD *saved_current_thd;
++
++  Rpl_info_table_access& operator=(const Rpl_info_table_access& info);
++  Rpl_info_table_access(const Rpl_info_table_access& info);
++};
++
++#endif /* RPL_INFO_TABLE_ACCESS_H */
+Index: sql/sql_class.h
+===================================================================
+--- sql/sql_class.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_class.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -3610,6 +3610,11 @@
+ */
+ #define CF_CAN_GENERATE_ROW_EVENTS (1U << 9)
+ 
++/**
++  Identifies statements that can directly update a rpl info table.
++*/
++#define CF_WRITE_RPL_INFO_COMMAND (1U << 12)
++
+ /* Bits in server_command_flags */
+ 
+ /**
+Index: sql/table.cc
+===================================================================
+--- sql/table.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/table.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -52,6 +52,10 @@
+ /* SLOW_LOG name */
+ LEX_STRING SLOW_LOG_NAME= {C_STRING_WITH_LEN("slow_log")};
+ 
++/* RLI_INFO name */
++LEX_STRING RLI_INFO_NAME= {C_STRING_WITH_LEN("slave_relay_log_info")};
++
++
+ 	/* Functions defined in this file */
+ 
+ void open_table_error(TABLE_SHARE *share, int error, int db_errno,
+@@ -261,6 +265,12 @@
+                        SLOW_LOG_NAME.str,
+                        name->str) == 0))
+       return TABLE_CATEGORY_LOG;
++
++	if ((name->length == RLI_INFO_NAME.length) &&
++        (my_strcasecmp(system_charset_info,
++                      RLI_INFO_NAME.str,
++                      name->str) == 0))
++      return TABLE_CATEGORY_RPL_INFO;
+   }
+ 
+   return TABLE_CATEGORY_USER;
+Index: sql/rpl_info_values.cc
+===================================================================
+--- sql/rpl_info_values.cc	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_values.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,46 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#include "rpl_info_values.h"
++
++Rpl_info_values::Rpl_info_values(int param_ninfo): value(0),
++    ninfo(param_ninfo) { }
++
++/**
++  Initializes a sequence of values to be read from or stored into a repository.
++  The number of values created and initialized are determined by the property
++  @c ninfo which is set while calling the constructor. Each value is created
++  with the default size of @c FN_REFLEN.
++
++  @retval FALSE No error
++  @retval TRUE Failure
++*/
++bool Rpl_info_values::init()
++{
++  DBUG_ENTER("Rpl_info_values::init");
++
++  if (!value && !(value= new String[ninfo]))
++      DBUG_RETURN(TRUE);
++
++  DBUG_RETURN(FALSE);
++}
++
++Rpl_info_values::~Rpl_info_values()
++{
++  for (int pos= 0; pos < ninfo; pos++)
++    value[pos].~String();
++
++  delete [] value;
++}
+Index: sql/rpl_rli.cc
+===================================================================
+--- sql/rpl_rli.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/rpl_rli.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -28,7 +28,19 @@
+ #include "sql_parse.h"                          // end_trans, ROLLBACK
+ #include <mysql/plugin.h>
+ #include <mysql/service_thd_wait.h>
++#include "rpl_info_table.h"
++#include "rpl_info_fake.h"
+ 
++const char* info_rli_fields[]=
++{
++  "number_of_lines",
++  "group_relay_log_name",
++  "group_relay_log_pos",
++  "group_master_log_name",
++  "group_master_log_pos",
++};
++my_bool opt_enable_table_relay_info = 0;
++
+ static int count_relay_log_space(Relay_log_info* rli);
+ 
+ // Defined in slave.cc
+@@ -66,6 +78,7 @@
+ 
+   group_relay_log_name[0]= event_relay_log_name[0]=
+     group_master_log_name[0]= 0;
++  tmp_group_master_log_name[0]= 0;
+   until_log_name[0]= ign_master_log_name_end[0]= 0;
+   bzero((char*) &info_file, sizeof(info_file));
+   bzero((char*) &cache_buf, sizeof(cache_buf));
+@@ -80,6 +93,15 @@
+   mysql_cond_init(key_relay_log_info_stop_cond, &stop_cond, NULL);
+   mysql_cond_init(key_relay_log_info_log_space_cond, &log_space_cond, NULL);
+   relay_log.init_pthread_objects();
++  if(opt_enable_table_relay_info)
++  {
++	handler= new Rpl_info_table((uint)(get_number_info_rli_fields() + 1),
++                                   RLI_FIELD_ID, RLI_SCHEMA, RLI_TABLE);
++  }
++  else
++  {
++	handler= new Rpl_info_fake();
++  }
+   DBUG_VOID_RETURN;
+ }
+ 
+@@ -87,7 +109,7 @@
+ Relay_log_info::~Relay_log_info()
+ {
+   DBUG_ENTER("Relay_log_info::~Relay_log_info");
+-
++  delete handler;
+   mysql_mutex_destroy(&run_lock);
+   mysql_mutex_destroy(&data_lock);
+   mysql_mutex_destroy(&log_space_lock);
+@@ -99,12 +121,9 @@
+   DBUG_VOID_RETURN;
+ }
+ 
+-
+ int init_relay_log_info(Relay_log_info* rli,
+ 			const char* info_fname)
+ {
+-  char fname[FN_REFLEN+128];
+-  int info_fd;
+   const char* msg = 0;
+   int error = 0;
+   DBUG_ENTER("init_relay_log_info");
+@@ -112,9 +131,7 @@
+ 
+   if (rli->inited)                       // Set if this function called
+     DBUG_RETURN(0);
+-  fn_format(fname, info_fname, mysql_data_home, "", 4+32);
+   mysql_mutex_lock(&rli->data_lock);
+-  info_fd = rli->info_fd;
+   rli->cur_log_fd = -1;
+   rli->slave_skip_counter=0;
+   rli->abort_pos_wait=0;
+@@ -122,8 +139,7 @@
+   rli->log_space_total= 0;
+   rli->tables_to_lock= 0;
+   rli->tables_to_lock_count= 0;
+-
+-  char pattern[FN_REFLEN];
++ char pattern[FN_REFLEN];
+   (void) my_realpath(pattern, slave_load_tmpdir, 0);
+   if (fn_format(pattern, PREFIX_SQL_LOAD, pattern, "",
+             MY_SAFE_PATH | MY_RETURN_REAL_PATH) == NullS)
+@@ -213,124 +229,24 @@
+     rli->relay_log.is_relay_log= TRUE;
+   }
+ 
+-  /* if file does not exist */
+-  if (access(fname,F_OK))
++  if(!opt_enable_table_relay_info)
+   {
+-    /*
+-      If someone removed the file from underneath our feet, just close
+-      the old descriptor and re-create the old file
+-    */
+-    if (info_fd >= 0)
+-      mysql_file_close(info_fd, MYF(MY_WME));
+-    if ((info_fd= mysql_file_open(key_file_relay_log_info,
+-                                  fname, O_CREAT|O_RDWR|O_BINARY, MYF(MY_WME))) < 0)
+-    {
+-      sql_print_error("Failed to create a new relay log info file (\
+-file '%s', errno %d)", fname, my_errno);
+-      msg= current_thd->stmt_da->message();
++  	if (rli->read_file_info(info_fname))
++	{
++      msg= "Error reading relay log configuration";
++      error= 1;
+       goto err;
+     }
+-    if (init_io_cache(&rli->info_file, info_fd, IO_SIZE*2, READ_CACHE, 0L,0,
+-                      MYF(MY_WME)))
+-    {
+-      sql_print_error("Failed to create a cache on relay log info file '%s'",
+-                      fname);
+-      msg= current_thd->stmt_da->message();
+-      goto err;
+-    }
+-
+-    /* Init relay log with first entry in the relay index file */
+-    if (init_relay_log_pos(rli,NullS,BIN_LOG_HEADER_SIZE,0 /* no data lock */,
+-                           &msg, 0))
+-    {
+-      sql_print_error("Failed to open the relay log 'FIRST' (relay_log_pos 4)");
+-      goto err;
+-    }
+-    rli->group_master_log_name[0]= 0;
+-    rli->group_master_log_pos= 0;
+-    rli->info_fd= info_fd;
+   }
+-  else // file exists
++  else
+   {
+-    if (info_fd >= 0)
+-      reinit_io_cache(&rli->info_file, READ_CACHE, 0L,0,0);
+-    else
+-    {
+-      int error=0;
+-      if ((info_fd= mysql_file_open(key_file_relay_log_info,
+-                                    fname, O_RDWR|O_BINARY, MYF(MY_WME))) < 0)
+-      {
+-        sql_print_error("\
+-Failed to open the existing relay log info file '%s' (errno %d)",
+-                        fname, my_errno);
+-        error= 1;
+-      }
+-      else if (init_io_cache(&rli->info_file, info_fd,
+-                             IO_SIZE*2, READ_CACHE, 0L, 0, MYF(MY_WME)))
+-      {
+-        sql_print_error("Failed to create a cache on relay log info file '%s'",
+-                        fname);
+-        error= 1;
+-      }
+-      if (error)
+-      {
+-        if (info_fd >= 0)
+-          mysql_file_close(info_fd, MYF(0));
+-        rli->info_fd= -1;
+-        rli->relay_log.close(LOG_CLOSE_INDEX | LOG_CLOSE_STOP_EVENT);
+-        mysql_mutex_unlock(&rli->data_lock);
+-        DBUG_RETURN(1);
+-      }
+-    }
+-
+-    rli->info_fd = info_fd;
+-    int relay_log_pos, master_log_pos;
+-    if (init_strvar_from_file(rli->group_relay_log_name,
+-                              sizeof(rli->group_relay_log_name),
+-                              &rli->info_file, "") ||
+-       init_intvar_from_file(&relay_log_pos,
+-                             &rli->info_file, BIN_LOG_HEADER_SIZE) ||
+-       init_strvar_from_file(rli->group_master_log_name,
+-                             sizeof(rli->group_master_log_name),
+-                             &rli->info_file, "") ||
+-       init_intvar_from_file(&master_log_pos, &rli->info_file, 0))
+-    {
+-      msg="Error reading slave log configuration";
++  	if (rli->read_table_info())
++  	{
++      msg= "Error reading relay log configuration";
++      error= 1;
+       goto err;
+-    }
+-    strmake(rli->event_relay_log_name,rli->group_relay_log_name,
+-            sizeof(rli->event_relay_log_name)-1);
+-    rli->group_relay_log_pos= rli->event_relay_log_pos= relay_log_pos;
+-    rli->group_master_log_pos= master_log_pos;
+-
+-    if (rli->is_relay_log_recovery && init_recovery(rli->mi, &msg))
+-      goto err;
+-
+-    if (init_relay_log_pos(rli,
+-                           rli->group_relay_log_name,
+-                           rli->group_relay_log_pos,
+-                           0 /* no data lock*/,
+-                           &msg, 0))
+-    {
+-      char llbuf[22];
+-      sql_print_error("Failed to open the relay log '%s' (relay_log_pos %s)",
+-                      rli->group_relay_log_name,
+-                      llstr(rli->group_relay_log_pos, llbuf));
+-      goto err;
+-    }
++  	}
+   }
+-
+-#ifndef DBUG_OFF
+-  {
+-    char llbuf1[22], llbuf2[22];
+-    DBUG_PRINT("info", ("my_b_tell(rli->cur_log)=%s rli->event_relay_log_pos=%s",
+-                        llstr(my_b_tell(rli->cur_log),llbuf1),
+-                        llstr(rli->event_relay_log_pos,llbuf2)));
+-    DBUG_ASSERT(rli->event_relay_log_pos >= BIN_LOG_HEADER_SIZE);
+-    DBUG_ASSERT(my_b_tell(rli->cur_log) == rli->event_relay_log_pos);
+-  }
+-#endif
+-
+   /*
+     Now change the cache from READ to WRITE - must do this
+     before flush_relay_log_info
+@@ -353,8 +269,8 @@
+ err:
+   sql_print_error("%s", msg);
+   end_io_cache(&rli->info_file);
+-  if (info_fd >= 0)
+-    mysql_file_close(info_fd, MYF(0));
++  if (rli->info_fd >= 0)
++    mysql_file_close(rli->info_fd, MYF(0));
+   rli->info_fd= -1;
+   rli->relay_log.close(LOG_CLOSE_INDEX | LOG_CLOSE_STOP_EVENT);
+   mysql_mutex_unlock(&rli->data_lock);
+@@ -906,7 +822,70 @@
+   DBUG_VOID_RETURN;
+ }
+ 
++bool Relay_log_info::write_file_info()
++{
++  DBUG_ENTER("write_file_info");
++  bool error=0;
++  if (unlikely(no_storage))
++    DBUG_RETURN(0);
++	
++  IO_CACHE *file = &info_file;
++  char buff[FN_REFLEN*2+22*2+4], *pos;
++	
++  my_b_seek(file, 0L);
++  pos=strmov(buff, get_group_relay_log_name());
++  *pos++='\n';
++  pos=longlong2str(get_group_relay_log_pos(), pos, 10);
++  *pos++='\n';
++  pos=strmov(pos, get_group_master_log_name());
++  *pos++='\n';
++  pos=longlong2str(get_group_master_log_pos(), pos, 10);
++  *pos='\n';
++  if (my_b_write(file, (uchar*) buff, (size_t) (pos-buff)+1))
++    error=1;
++  if (flush_io_cache(file))
++    error=1;
++  if (sync_relayloginfo_period &&
++      !error &&
++      ++sync_counter >= sync_relayloginfo_period)
++  {
++    if (my_sync(info_fd, MYF(MY_WME)))
++    error=1;
++    sync_counter = 0;
++  }
++  /* 
++  Flushing the relay log is done by the slave I/O thread 
++  or by the user on STOP SLAVE. 
++  */
++  DBUG_RETURN(error);
++}
+ 
++
++bool Relay_log_info::flush_info()
++{
++  int error = 0;
++  DBUG_ENTER("flush_info");
++  
++  if(!opt_enable_table_relay_info)
++    error = write_file_info();
++  else 
++    error = write_table_info();
++
++  DBUG_RETURN(error);
++}
++
++bool Relay_log_info::reach_relay_log_end(my_off_t log_pos)
++{
++  DBUG_ENTER("reach_relay_log_end");
++  int ret = 0;
++  if (mi->master_last_commit_pos == log_pos)
++  { 
++	ret = 1;
++  }
++  DBUG_PRINT("rlh",("return val: %d",ret));
++  DBUG_RETURN(ret);
++}
++
+ void Relay_log_info::close_temporary_tables()
+ {
+   TABLE *table,*next;
+@@ -1258,6 +1237,314 @@
+   DBUG_VOID_RETURN;
+ }
+ 
++size_t Relay_log_info::get_number_info_rli_fields() 
++{ 
++  return sizeof(info_rli_fields)/sizeof(info_rli_fields[0]);
++}
++
++bool Relay_log_info::read_file_info(const char* info_fname)
++{
++  DBUG_ENTER("read_file_info");
++  const char* msg = 0;
++  char fname[FN_REFLEN+128];
++  fn_format(fname, info_fname, mysql_data_home, "", 4+32);
++  /* if file does not exist */
++  if (access(fname,F_OK))
++  {
++    /*
++      If someone removed the file from underneath our feet, just close
++      the old descriptor and re-create the old file
++    */
++    if (info_fd >= 0)
++      mysql_file_close(info_fd, MYF(MY_WME));
++    if ((info_fd= mysql_file_open(key_file_relay_log_info,
++                                  fname, O_CREAT|O_RDWR|O_BINARY, MYF(MY_WME))) < 0)
++    {
++      sql_print_error("Failed to create a new relay log info file (\
++file '%s', errno %d)", fname, my_errno);
++      msg= current_thd->stmt_da->message();
++      DBUG_RETURN(TRUE);
++    }
++    if (init_io_cache(&info_file, info_fd, IO_SIZE*2, READ_CACHE, 0L,0,
++                      MYF(MY_WME)))
++    {
++      sql_print_error("Failed to create a cache on relay log info file '%s'",
++                      fname);
++      msg= current_thd->stmt_da->message();
++      DBUG_RETURN(TRUE);
++    }
++
++    /* Init relay log with first entry in the relay index file */
++    if (init_relay_log_pos(this,NullS,BIN_LOG_HEADER_SIZE,0 /* no data lock */,
++                           &msg, 0))
++    {
++      sql_print_error("Failed to open the relay log 'FIRST' (relay_log_pos 4)");
++      DBUG_RETURN(TRUE);
++    }
++    group_master_log_name[0]= 0;
++    group_master_log_pos= 0;
++	DBUG_RETURN(FALSE);
++  }
++  else // file exists
++  {
++	if (info_fd >= 0)
++		reinit_io_cache(&info_file, READ_CACHE, 0L,0,0);
++	else
++	{
++		int error=0;
++		if ((info_fd= mysql_file_open(key_file_relay_log_info,
++									  fname, O_RDWR|O_BINARY, MYF(MY_WME))) < 0)
++		{
++		  sql_print_error("\
++  Failed to open the existing relay log info file '%s' (errno %d)",
++						  fname, my_errno);
++		  error= 1;
++		}
++		else if (init_io_cache(&info_file, info_fd,
++							   IO_SIZE*2, READ_CACHE, 0L, 0, MYF(MY_WME)))
++		{
++		  sql_print_error("Failed to create a cache on relay log info file '%s'",
++						  fname);
++		  error= 1;
++		}
++		if (error)
++		{
++		  if (info_fd >= 0)
++			mysql_file_close(info_fd, MYF(0));
++		  info_fd= -1;
++		  DBUG_RETURN(TRUE);
++		}
++	}
++	 int relay_log_pos, master_log_pos;
++  	 if (init_strvar_from_file(group_relay_log_name,
++                            sizeof(group_relay_log_name),
++                            &info_file, "") ||
++     init_intvar_from_file(&relay_log_pos,
++                           &info_file, BIN_LOG_HEADER_SIZE) ||
++     init_strvar_from_file(group_master_log_name,
++                           sizeof(group_master_log_name),
++                           &info_file, "") ||
++     init_intvar_from_file(&master_log_pos, &info_file, 0))
++     {
++      msg="Error reading slave log configuration";
++      DBUG_RETURN(TRUE);
++  	 }
++	 strmake(tmp_group_master_log_name,group_master_log_name, 
++	 		sizeof(tmp_group_master_log_name)-1);
++  	 strmake(event_relay_log_name,group_relay_log_name,
++            sizeof(event_relay_log_name)-1);
++  	 group_relay_log_pos= event_relay_log_pos= relay_log_pos;
++  	 group_master_log_pos= master_log_pos;
++	 
++	 if (is_relay_log_recovery && init_recovery(mi, &msg))
++    	DBUG_RETURN(TRUE);
++
++  	 if (init_relay_log_pos(this,
++                         group_relay_log_name,
++                         group_relay_log_pos,
++                         0 /* no data lock*/,
++                         &msg, 0))
++  	{
++    	char llbuf[22];
++    	sql_print_error("Failed to open the relay log '%s' (relay_log_pos %s)",
++                    group_relay_log_name,
++                    llstr(group_relay_log_pos, llbuf));
++    	DBUG_RETURN(TRUE);
++  	}
++	#ifndef DBUG_OFF
++  	{
++      char llbuf1[22], llbuf2[22];
++      DBUG_PRINT("info", ("my_b_tell(rli->cur_log)=%s rli->event_relay_log_pos=%s",
++                        llstr(my_b_tell(cur_log),llbuf1),
++                        llstr(event_relay_log_pos,llbuf2)));
++      DBUG_ASSERT(event_relay_log_pos >= BIN_LOG_HEADER_SIZE);
++      DBUG_ASSERT(my_b_tell(cur_log) == event_relay_log_pos);
++    }
++	#endif
++	 DBUG_RETURN(FALSE);
++  }
++  
++}
++
++bool Relay_log_info::read_table_info()
++{
++  int lines= 0, error= 0;
++  const char* msg = 0;
++  char *first_non_digit= NULL;
++  ulong temp_group_relay_log_pos= 0;
++  ulong temp_group_master_log_pos= 0;
++  DBUG_ENTER("Relay_log_info::read_info");
++  /*
++    Should not read RLI from file in client threads. Client threads
++    only use RLI to execute BINLOG statements.
++
++    @todo Uncomment the following assertion. Currently,
++    Relay_log_info::init() is called from init_master_info() before
++    the THD object Relay_log_info::sql_thd is created. That means we
++    cannot call belongs_to_client() since belongs_to_client()
++    dereferences Relay_log_info::sql_thd. So we need to refactor
++    slightly: the THD object should be created by Relay_log_info
++    constructor (or passed to it), so that we are guaranteed that it
++    exists at this point. /Sven
++  */
++  //DBUG_ASSERT(!belongs_to_client());
++
++  /*
++    Starting from 5.1.x, relay-log.info has a new format. Now, its
++    first line contains the number of lines in the file. By reading
++    this number we can determine which version our master.info comes
++    from. We can't simply count the lines in the file, since
++    versions before 5.1.x could generate files with more lines than
++    needed. If first line doesn't contain a number, or if it
++    contains a number less than LINES_IN_RELAY_LOG_INFO_WITH_DELAY,
++    then the file is treated like a file from pre-5.1.x version.
++    There is no ambiguity when reading an old master.info: before
++    5.1.x, the first line contained the binlog's name, which is
++    either empty or has an extension (contains a '.'), so can't be
++    confused with an integer.
++
++    So we're just reading first line and trying to figure which
++    version is this.
++  */
++  /*
++    The first row is temporarily stored in mi->master_log_name, if
++    it is line count and not binlog name (new format) it will be
++    overwritten by the second row later.
++  */
++  /*INNODB recovery is processing*/
++  while(HA_ERR_LOCK_WAIT_TIMEOUT == handler->check_info())
++  {
++	sleep(10);
++  }	
++  int necessary_to_configure= handler->check_info();
++  if ((error= handler->init_info()))
++  {
++    msg= "Error reading relay log configuration";
++    error= 1;
++    DBUG_RETURN(TRUE);
++  }
++  
++  if (necessary_to_configure)
++  {
++    /* Init relay log with first entry in the relay index file */
++    if (init_relay_log_pos(this, NullS, BIN_LOG_HEADER_SIZE, 0 /* no data lock */,
++                           &msg, 0))
++    {
++      error= 1;
++      DBUG_RETURN(TRUE);
++    }
++    group_master_log_name[0]= 0;
++    group_master_log_pos= 0;
++	DBUG_RETURN(FALSE);
++  }
++  else
++  {
++  	if (handler->prepare_info_for_read() ||
++      handler->get_info(group_relay_log_name, sizeof(group_relay_log_name), ""))
++    DBUG_RETURN(TRUE);
++	
++  	lines= strtoul(group_relay_log_name, &first_non_digit, 10);
++	
++  	if (group_relay_log_name[0]!='\0' &&
++      *first_non_digit=='\0' && lines >= LINES_IN_RELAY_LOG_INFO_WITH_DELAY)
++  	 {
++    	/* Seems to be new format => read group relay log name */
++    	if (handler->get_info(group_relay_log_name, sizeof(group_relay_log_name), ""))
++      		DBUG_RETURN(TRUE);
++  	 }
++  	else
++     DBUG_PRINT("info", ("relay_log_info file is in old format."));
++
++  	 if (handler->get_info((ulong *) &temp_group_relay_log_pos,
++                        (ulong) BIN_LOG_HEADER_SIZE) ||
++       handler->get_info(group_master_log_name,
++                        sizeof(group_relay_log_name), "") ||
++       handler->get_info((ulong *) &temp_group_master_log_pos,
++                        (ulong) 0))
++       DBUG_RETURN(TRUE);
++
++    group_relay_log_pos= event_relay_log_pos= temp_group_relay_log_pos;
++    group_master_log_pos= temp_group_master_log_pos;
++	
++	strmake(tmp_group_master_log_name,group_master_log_name, 
++	 		sizeof(tmp_group_master_log_name)-1);
++	
++	strmake(event_relay_log_name,group_relay_log_name,
++            sizeof(event_relay_log_name)-1);
++	
++	if (is_relay_log_recovery && init_recovery(mi, &msg))
++    	DBUG_RETURN(TRUE);
++
++  	if (init_relay_log_pos(this,
++                         group_relay_log_name,
++                         group_relay_log_pos,
++                         0 /* no data lock*/,
++                         &msg, 0))
++  	{
++    	char llbuf[22];
++    	sql_print_error("Failed to open the relay log '%s' (relay_log_pos %s)",
++                    group_relay_log_name,
++                    llstr(group_relay_log_pos, llbuf));
++    	DBUG_RETURN(TRUE);
++  	}
++	#ifndef DBUG_OFF
++  	{
++      char llbuf1[22], llbuf2[22];
++      DBUG_PRINT("info", ("my_b_tell(rli->cur_log)=%s rli->event_relay_log_pos=%s",
++                        llstr(my_b_tell(cur_log),llbuf1),
++                        llstr(event_relay_log_pos,llbuf2)));
++      DBUG_ASSERT(event_relay_log_pos >= BIN_LOG_HEADER_SIZE);
++      DBUG_ASSERT(my_b_tell(cur_log) == event_relay_log_pos);
++    }
++	#endif
++    DBUG_RETURN(FALSE);
++  }
++}
++
++bool Relay_log_info::write_table_event(ulonglong log_pos)
++{
++  DBUG_ENTER("Relay_log_info::write_table_event");
++  handler->set_sync_period(sync_relayloginfo_period);
++  
++  if (handler->prepare_info_for_write() ||
++      handler->set_info((int) LINES_IN_RELAY_LOG_INFO_WITH_DELAY) ||
++      handler->set_info(event_relay_log_name) ||
++      handler->set_info((ulong) future_event_relay_log_pos) ||
++      handler->set_info(tmp_group_master_log_name) ||
++      handler->set_info((ulong) log_pos))
++    DBUG_RETURN(TRUE);
++ 
++  if (handler->flush_info(TRUE))
++    DBUG_RETURN(TRUE);
++
++  DBUG_RETURN(FALSE);
++}
++
++bool Relay_log_info::write_table_info()
++{
++  DBUG_ENTER("Relay_log_info::write_table_info");
++
++  /*
++    @todo Uncomment the following assertion. See todo in
++    Relay_log_info::read_info() for details. /Sven
++  */
++  //DBUG_ASSERT(!belongs_to_client());
++  handler->set_sync_period(sync_relayloginfo_period);
++  
++  if (handler->prepare_info_for_write() ||
++      handler->set_info((int) LINES_IN_RELAY_LOG_INFO_WITH_DELAY) ||
++      handler->set_info(group_relay_log_name) ||
++      handler->set_info((ulong) group_relay_log_pos) ||
++      handler->set_info(tmp_group_master_log_name) ||
++      handler->set_info((ulong) group_master_log_pos))
++    DBUG_RETURN(TRUE);
++
++  if (handler->flush_info(TRUE))
++    DBUG_RETURN(TRUE);
++
++  DBUG_RETURN(FALSE);
++}
++
+ void Relay_log_info::clear_tables_to_lock()
+ {
+   while (tables_to_lock)
+Index: sql/lock.cc
+===================================================================
+--- sql/lock.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/lock.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -116,7 +116,12 @@
+ lock_tables_check(THD *thd, TABLE **tables, uint count, uint flags)
+ {
+   uint system_count, i;
+-  bool is_superuser, log_table_write_query;
++  bool is_superuser;
++  /*
++    Identifies if the executed sql command can updated either a log
++    or rpl info table.
++  */
++  bool log_table_write_query, rpl_info_table_write_query;
+ 
+   DBUG_ENTER("lock_tables_check");
+ 
+@@ -124,6 +129,8 @@
+   is_superuser= thd->security_ctx->master_access & SUPER_ACL;
+   log_table_write_query= (is_log_table_write_query(thd->lex->sql_command)
+                          || ((flags & MYSQL_LOCK_LOG_TABLE) != 0));
++  rpl_info_table_write_query=
++     is_rpl_info_table_write_query(thd->lex->sql_command);
+ 
+   for (i=0 ; i<count; i++)
+   {
+@@ -138,6 +145,23 @@
+       When a user is requesting a lock, the following
+       constraints are enforced:
+     */
++	if (t->s->table_category == TABLE_CATEGORY_RPL_INFO &&
++        (flags & MYSQL_LOCK_RPL_INFO_TABLE) == 0 &&
++        !rpl_info_table_write_query)
++    {
++      /*
++        A user should not be able to prevent writes,
++        or hold any type of lock in a session,
++        since this would be a DOS attack.
++      */
++      if (t->reginfo.lock_type >= TL_READ_NO_INSERT ||
++          thd->lex->sql_command == SQLCOM_LOCK_TABLES)
++      {
++          my_error(ER_CANT_LOCK_RPL_INFO_TABLE, MYF(0));
++          DBUG_RETURN(1);
++      }
++    }
++	
+     if (t->s->require_write_privileges() &&
+         ! log_table_write_query)
+     {
+Index: sql/mysqld.cc
+===================================================================
+--- sql/mysqld.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/mysqld.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -6377,6 +6377,9 @@
+ */
+ 
+ SHOW_VAR status_vars[]= {
++  {"Commit_batch",      	   (char*) &batch_commit_count,		SHOW_LONG},
++  {"Commit_single",	   		   (char*) &commit_num,		    	SHOW_LONG},
++  {"Commit_all",	   		   (char*) &commit_sum,				SHOW_LONG},
+   {"Aborted_clients",          (char*) &aborted_threads,        SHOW_LONG},
+   {"Aborted_connects",         (char*) &aborted_connects,       SHOW_LONG},
+   {"Binlog_cache_disk_use",    (char*) &binlog_cache_disk_use,  SHOW_LONG},
+Index: sql/rpl_mi.h
+===================================================================
+--- sql/rpl_mi.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/rpl_mi.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -73,7 +73,8 @@
+   char ssl_ca[FN_REFLEN], ssl_capath[FN_REFLEN], ssl_cert[FN_REFLEN];
+   char ssl_cipher[FN_REFLEN], ssl_key[FN_REFLEN];
+   my_bool ssl_verify_server_cert;
+-
++  
++  my_off_t master_last_commit_pos;//the last commit position in master binlog (Xid OR Query commit OR DDL)
+   my_off_t master_log_pos;
+   File fd; // we keep the file open, so we need to remember the file pointer
+   IO_CACHE file;
+Index: sql/rpl_info_values.h
+===================================================================
+--- sql/rpl_info_values.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_values.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,42 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#ifndef RPL_INFO_VALUES_H
++#define RPL_INFO_VALUES_H
++
++#include <my_global.h>
++#include <sql_priv.h>
++#include <my_sys.h>
++#include <sql_string.h>
++
++class Rpl_info_values
++{
++public:
++  Rpl_info_values(int param_ninfo);
++  virtual ~Rpl_info_values();
++
++  bool init();
++
++  /* Sequence of values to be read from or stored into a repository. */
++  String *value;
++
++private:
++  /* This property represents the number of fields. */
++  int ninfo;
++
++  Rpl_info_values& operator=(const Rpl_info_values& values);
++  Rpl_info_values(const Rpl_info_values& values);
++};
++#endif /* RPL_INFO_VALUES_H */
+Index: sql/table.h
+===================================================================
+--- sql/table.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/table.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -440,7 +440,25 @@
+     The server implementation perform writes.
+     Performance tables are cached in the table cache.
+   */
+-  TABLE_CATEGORY_PERFORMANCE=6
++  TABLE_CATEGORY_PERFORMANCE=6,
++  /**
++    Replication Information Tables.
++    These tables are used to store replication information.
++    These tables do *not* honor:
++    - LOCK TABLE t FOR READ/WRITE
++    - FLUSH TABLES WITH READ LOCK
++    - SET GLOBAL READ_ONLY = ON
++    as there is no point in locking explicitly
++    a Replication Information table.
++    An example of replication tables are:
++    - mysql.slave_master_info
++    - mysql.slave_relay_log_info,
++    which *are* updated even when there is either
++    a GLOBAL READ LOCK or a GLOBAL READ_ONLY in effect.
++    User queries do not write directly to these tables.
++    Replication tables are cached in the table cache.
++  */
++  TABLE_CATEGORY_RPL_INFO=7
+ };
+ typedef enum enum_table_category TABLE_CATEGORY;
+ 
+Index: sql/rpl_info_fake.h
+===================================================================
+--- sql/rpl_info_fake.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_fake.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,49 @@
++#ifndef RPL_INFO_FAKE_H
++#define RPL_INFO_FAKE_H
++
++#include "rpl_info_handler.h"
++
++/*
++  Please every time you add a new field to the relay log info, update
++  what follows. For now, this is just used to get the number of
++  fields.
++*/
++class Rpl_info_fake : public Rpl_info_handler
++{
++public:
++  Rpl_info_fake();
++  virtual ~Rpl_info_fake();
++
++private:
++
++  int do_init_info(){return 0;}
++  int do_check_info(){return 0;}
++  void do_end_info(){}
++  int do_flush_info(const bool force){return 0;}
++  int do_remove_info(){return 0;}
++
++  int do_prepare_info_for_read(){return 0;}
++  int do_prepare_info_for_write(){return 0;}
++  bool do_set_info(const int pos, const char *value){return TRUE;}
++  bool do_set_info(const int pos, const int value){return TRUE;}
++  bool do_set_info(const int pos, const ulong value){return TRUE;}
++  bool do_set_info(const int pos, const float value){return TRUE;}
++  bool do_set_info(const int pos, const Server_ids *value){return TRUE;}
++  bool do_get_info(const int pos, char *value, const size_t size,
++                   const char *default_value){return TRUE;}
++  bool do_get_info(const int pos, int *value,
++                   const int default_value){return TRUE;}
++  bool do_get_info(const int pos, ulong *value,
++                   const ulong default_value){return TRUE;}
++  bool do_get_info(const int pos, float *value,
++                   const float default_value){return TRUE;}
++  bool do_get_info(const int pos, Server_ids *value,
++                   const Server_ids *default_value){return TRUE;}
++  char* do_get_description_info(){return NULL;}
++  bool do_is_transactional(){return FALSE;}
++
++  Rpl_info_fake& operator=(const Rpl_info_fake& info);
++  Rpl_info_fake(const Rpl_info_fake& info);
++};
++
++#endif /* RPL_INFO_FAKE_H */
+Index: sql/rpl_info_table_access.cc
+===================================================================
+--- sql/rpl_info_table_access.cc	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_table_access.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,326 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#include "rpl_info_table_access.h"
++#include "rpl_utility.h"
++#include "handler.h"
++#include "sql_parse.h"
++
++/**
++  Opens and locks a table.
++
++  It's assumed that the caller knows what they are doing:
++  - whether it was necessary to reset-and-backup the open tables state
++  - whether the requested lock does not lead to a deadlock
++  - whether this open mode would work under LOCK TABLES, or inside a
++  stored function or trigger.
++
++  Note that if the table can't be locked successfully this operation will
++  close it. Therefore it provides guarantee that it either opens and locks
++  table or fails without leaving any tables open.
++
++  @param[in]  thd           Thread requesting to open the table
++  @param[in]  dbstr         Database where the table resides
++  @param[in]  tbstr         Table to be openned
++  @param[in]  max_num_field Maximum number of fields
++  @param[in]  lock_type     How to lock the table
++  @param[out] table         We will store the open table here
++  @param[out] backup        Save the lock info. here
++
++  @return
++    @retval TRUE open and lock failed - an error message is pushed into the
++                                        stack
++    @retval FALSE success
++*/
++bool Rpl_info_table_access::open_table(THD* thd, const LEX_STRING dbstr,
++                                       const LEX_STRING tbstr,
++                                       uint max_num_field,
++                                       enum thr_lock_type lock_type,
++                                       TABLE** table,
++                                       Open_tables_backup* backup)
++{
++  TABLE_LIST tables;
++
++  uint flags= (MYSQL_OPEN_IGNORE_GLOBAL_READ_LOCK |
++               MYSQL_LOCK_IGNORE_GLOBAL_READ_ONLY |
++               MYSQL_OPEN_IGNORE_FLUSH |
++               MYSQL_LOCK_IGNORE_TIMEOUT |
++               MYSQL_LOCK_RPL_INFO_TABLE);
++
++  DBUG_ENTER("Rpl_info_table_access::open_table");
++
++  /*
++    This is equivalent to a new "statement". For that reason, we call both
++    lex_start() and mysql_reset_thd_for_next_command.
++  */
++  if (thd->slave_thread || !current_thd)
++  { 
++    lex_start(thd);
++    mysql_reset_thd_for_next_command(thd);
++  }
++
++  thd->reset_n_backup_open_tables_state(backup);
++
++  tables.init_one_table(dbstr.str, dbstr.length, tbstr.str, tbstr.length,
++                        tbstr.str, lock_type);
++
++  if (!open_n_lock_single_table(thd, &tables, tables.lock_type, flags))
++  {
++    close_thread_tables(thd);
++    thd->restore_backup_open_tables_state(backup);
++    my_error(ER_NO_SUCH_TABLE, MYF(0), dbstr.str, tbstr.str);
++    DBUG_RETURN(TRUE);
++  }
++
++  DBUG_ASSERT(tables.table->s->table_category == TABLE_CATEGORY_RPL_INFO);
++
++  if (tables.table->s->fields < max_num_field)
++  {
++    /*
++      Safety: this can only happen if someone started the server and then
++      altered the table.
++    */
++    my_error(ER_COL_COUNT_DOESNT_MATCH_CORRUPTED_V2, MYF(0),
++             tables.table->s->db.str, tables.table->s->table_name.str,
++             max_num_field, tables.table->s->fields);
++    close_thread_tables(thd);
++    thd->restore_backup_open_tables_state(backup);
++    DBUG_RETURN(TRUE);
++  }
++
++  *table= tables.table;
++  tables.table->use_all_columns();
++  DBUG_RETURN(FALSE);
++}
++
++/**
++  Commits the changes, unlocks the table and closes it. This method
++  needs to be called even if the open_table fails, in order to ensure
++  the lock info is properly restored.
++
++  @param[in] thd    Thread requesting to close the table
++  @param[in] table  Table to be closed
++  @param[in] backup Restore the lock info from here
++  @param[in] error  If there was an error while updating
++                    the table
++
++  If there is an error, rolls back the current statement. Otherwise,
++  commits it. However, if a new thread was created and there is an
++  error, the transaction must be rolled back. Otherwise, it must be
++  committed. In this case, the changes were not done on behalf of
++  any user transaction and if not finished, there would be pending
++  changes.
++  
++  @return
++    @retval FALSE No error
++    @retval TRUE  Failure
++*/
++bool Rpl_info_table_access::close_table(THD *thd, TABLE* table,
++                                        Open_tables_backup *backup,
++                                        bool error)
++{
++  DBUG_ENTER("Rpl_info_table_access::close_table");
++
++  if (table)
++  {
++    if (error)
++      ha_rollback_trans(thd, FALSE);
++    else
++      ha_commit_trans(thd, FALSE);
++
++    if (saved_current_thd != current_thd)
++    {
++      if (error)
++        ha_rollback_trans(thd, TRUE);
++      else
++        ha_commit_trans(thd, TRUE);
++    }
++    close_thread_tables(thd);
++    thd->restore_backup_open_tables_state(backup);
++  }
++
++  DBUG_RETURN(FALSE);
++}
++
++/**
++  Positions the internal pointer of `table` to the place where (id)
++  is stored.
++
++  In case search succeeded, the table cursor points to the found row.
++
++  @param[in]      server_id    Server id
++  @param[in]      idx          Index field
++  @param[in,out]  field_values The sequence of values
++  @param[in,out]  table        Table
++
++  @return
++    @retval FOUND     The row was found.
++    @retval NOT_FOUND The row was not found.
++    @retval ERROR     There was a failure.
++*/
++int Rpl_info_table_access::find_info_for_server_id(ulong server_id,
++                                                                   uint idx,
++                                                                   Rpl_info_values *field_values,
++                                                                   TABLE *table)
++{
++  uchar key[MAX_KEY_LENGTH];
++  DBUG_ENTER("Rpl_info_table_access::find_info_for_server_id");
++
++  field_values->value[idx].set_int(server_id, TRUE, &my_charset_bin);
++
++  if (field_values->value[idx].length() > table->field[idx]->field_length)
++    DBUG_RETURN(ERROR_ID);
++
++  table->field[idx]->store(field_values->value[idx].c_ptr_safe(),
++                           field_values->value[idx].length(),
++                           &my_charset_bin);
++
++  if (!(table->field[idx]->flags & PRI_KEY_FLAG) &&
++      table->s->keys_in_use.is_set(0))
++    DBUG_RETURN(ERROR_ID);
++
++  key_copy(key, table->record[0], table->key_info, table->key_info->key_length);
++
++  int error = table->file->index_read_idx_map(table->record[0], 0, key, HA_WHOLE_KEY,
++                                         HA_READ_KEY_EXACT);
++  sql_print_information("find_index_id:%d",error);
++  if(!error)
++  {
++    DBUG_RETURN(FOUND_ID);
++  }
++  if(HA_ERR_KEY_NOT_FOUND == error)
++  {
++	DBUG_RETURN(NOT_FOUND_ID);
++  }
++
++  DBUG_RETURN(error);
++}
++
++
++/**
++  Reads information from a sequence of fields into a set of LEX_STRING
++  structures, where the sequence of values is specified through the object
++  Rpl_info_values.
++
++  @param[in] max_num_field Maximum number of fields
++  @param[in] fields        The sequence of fields
++  @param[in] field_values  The sequence of values
++
++  @return
++    @retval FALSE No error
++    @retval TRUE  Failure
++ */
++bool Rpl_info_table_access::load_info_values(uint max_num_field, Field **fields,
++                                             Rpl_info_values *field_values)
++{
++  DBUG_ENTER("Rpl_info_table_access::load_info_values");
++  char buff[MAX_FIELD_WIDTH];
++  String str(buff, sizeof(buff), &my_charset_bin);
++
++  uint field_idx= 0;
++  while (field_idx < max_num_field)
++  {
++    fields[field_idx]->val_str(&str);
++    field_values->value[field_idx].copy(str.c_ptr_safe(), str.length(),
++                                             &my_charset_bin);
++    field_idx++;
++  }
++
++  DBUG_RETURN(FALSE);
++}
++
++/**
++  Stores information from a sequence of fields into a set of LEX_STRING
++  structures, where the sequence of values is specified through the object
++  Rpl_info_values.
++
++  @param[in] max_num_field Maximum number of fields
++  @param[in] fields        The sequence of fields
++  @param[in] field_values  The sequence of values
++
++  @return
++    @retval FALSE No error
++    @retval TRUE  Failure
++ */
++bool Rpl_info_table_access::store_info_values(uint max_num_field, Field **fields,
++                                              Rpl_info_values *field_values)
++{
++  DBUG_ENTER("Rpl_info_table_access::store_info_values");
++  uint field_idx= 0;
++
++  while (field_idx < max_num_field)
++  {
++    fields[field_idx]->set_notnull();
++    if (fields[field_idx]->store(field_values->value[field_idx].c_ptr_safe(),
++                                 field_values->value[field_idx].length(),
++                                 &my_charset_bin))
++    {
++      my_error(ER_RPL_INFO_DATA_TOO_LONG, MYF(0),
++               fields[field_idx]->field_name);
++      DBUG_RETURN(TRUE);
++    }
++    field_idx++;
++  }
++
++  DBUG_RETURN(FALSE);
++}
++
++/**
++  Creates a new thread if necessary. In the bootstrap process or in
++  the mysqld startup, a thread is created in order to be able to
++  access a table. Otherwise, the current thread is used.
++
++  @return
++    @retval THD* Pointer to thread structure
++*/
++THD *Rpl_info_table_access::create_thd()
++{
++  THD *thd= NULL;
++  saved_current_thd= current_thd;
++
++  if (!current_thd)
++  {
++    thd= new THD;
++    thd->thread_stack= (char*) &thd;
++    thd->store_globals();
++  }
++  else
++    thd= current_thd;
++
++  return(thd);
++}
++
++/**
++  Destroys the created thread if necessary and restores the
++  system_thread information.
++
++  @param[in] thd Thread requesting to be destroyed
++
++  @return
++    @retval FALSE No error
++    @retval TRUE  Failure
++*/
++bool Rpl_info_table_access::drop_thd(THD *thd)
++{
++  DBUG_ENTER("Rpl_info::drop_thd");
++
++  if (saved_current_thd != current_thd)
++  {
++    delete thd;
++    my_pthread_setspecific_ptr(THR_THD,  NULL);
++  }
++
++  DBUG_RETURN(FALSE);
++}
+Index: sql/rpl_info_handler.cc
+===================================================================
+--- sql/rpl_info_handler.cc	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_handler.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,43 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#include <my_global.h>
++#include <sql_priv.h>
++#include "rpl_info_handler.h"
++
++Rpl_info_handler::Rpl_info_handler(const int nparam)
++  :field_values(0), ninfo(nparam), cursor((my_off_t)0),
++  prv_error(0), sync_counter(0), sync_period(0)
++{  
++  field_values= new Rpl_info_values(ninfo);
++  /*
++    Configures fields to temporary hold information. If the configuration
++    fails due to memory allocation problems, the object is deleted.
++  */
++  if (field_values && field_values->init())
++  {
++    delete field_values;
++    field_values= 0;
++  }
++}
++
++Rpl_info_handler::~Rpl_info_handler()
++{
++  if (field_values)
++  {
++    delete field_values;
++  }
++}
++
+Index: sql/mysqld.h
+===================================================================
+--- sql/mysqld.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/mysqld.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -78,6 +78,7 @@
+ extern MYSQL_PLUGIN_IMPORT CHARSET_INFO *national_charset_info;
+ extern MYSQL_PLUGIN_IMPORT CHARSET_INFO *table_alias_charset;
+ 
++extern my_bool opt_enable_table_relay_info;
+ /**
+   Character set of the buildin error messages loaded from errmsg.sys.
+ */
+@@ -216,7 +217,10 @@
+ extern char err_shared_dir[];
+ extern TYPELIB thread_handling_typelib;
+ extern my_decimal decimal_zero;
+-
++extern ulong batch_commit_count;
++extern ulong commit_sum;
++extern ulong commit_num;
++extern ulong batch_commit_max;
+ /*
+   THR_MALLOC is a key which will be used to set/get MEM_ROOT** for a thread,
+   using my_pthread_setspecific_ptr()/my_thread_getspecific_ptr().
+Index: sql/rpl_info_table.h
+===================================================================
+--- sql/rpl_info_table.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_table.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,108 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#ifndef RPL_INFO_TABLE_H
++#define RPL_INFO_TABLE_H
++
++#include "rpl_info_handler.h"
++#include "rpl_info_table_access.h"
++
++#define RLI_FIELD_ID 0
++
++#define RLI_SCHEMA "mysql"
++#define RLI_TABLE  "slave_relay_log_info"
++
++/*
++  Please every time you add a new field to the relay log info, update
++  what follows. For now, this is just used to get the number of
++  fields.
++*/
++class Rpl_info_table : public Rpl_info_handler
++{
++public:
++  Rpl_info_table(uint nparam, uint param_field_id, const char* param_schema,
++                 const char *param_table);
++  virtual ~Rpl_info_table();
++  /*
++    This enables to change the engine in use by internally executing
++    an ALTER TABLE ENGINE= engine.
++
++    @param[in]  engine  Type of the engine, e.g. Innodb, MyIsam.
++
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  bool change_engine(const char* engine);
++private:
++  /*
++    This property identifies the name of the schema where a
++    replication table is created.
++  */
++  LEX_STRING str_schema;
++
++  /*
++    This property identifies the name of a replication
++    table.
++  */
++  LEX_STRING str_table;
++
++  /*
++    This property indentifies the id/position of the field that is
++    used as primary key.
++  */
++  uint field_idx;
++  /*
++    This property represents a description of the repository.
++    Speciffically, "schema"."table".
++  */
++  char *description;
++
++  /*
++    This is a pointer to a class that facilitates manipulation
++    of replication tables.
++  */
++  Rpl_info_table_access *access;
++
++  int do_init_info();
++  int do_check_info();
++  void do_end_info();
++  int do_flush_info(const bool force);
++  int do_remove_info();
++
++  int do_prepare_info_for_read();
++  int do_prepare_info_for_write();
++  bool do_set_info(const int pos, const char *value);
++  bool do_set_info(const int pos, const int value);
++  bool do_set_info(const int pos, const ulong value);
++  bool do_set_info(const int pos, const float value);
++  bool do_set_info(const int pos, const Server_ids *value);
++  bool do_get_info(const int pos, char *value, const size_t size,
++                   const char *default_value);
++  bool do_get_info(const int pos, int *value,
++                   const int default_value);
++  bool do_get_info(const int pos, ulong *value,
++                   const ulong default_value);
++  bool do_get_info(const int pos, float *value,
++                   const float default_value);
++  bool do_get_info(const int pos, Server_ids *value,
++                   const Server_ids *default_value);
++  char* do_get_description_info();
++  bool do_is_transactional();
++
++  Rpl_info_table& operator=(const Rpl_info_table& info);
++  Rpl_info_table(const Rpl_info_table& info);
++};
++
++#endif /* RPL_INFO_TABLE_H */
+Index: sql/share/errmsg-utf8.txt
+===================================================================
+--- sql/share/errmsg-utf8.txt	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/share/errmsg-utf8.txt	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -6313,7 +6313,6 @@
+   eng "Cannot execute statement: impossible to write to binary log since statement is in row format and BINLOG_FORMAT = STATEMENT."
+ ER_BINLOG_MULTIPLE_ENGINES_AND_SELF_LOGGING_ENGINE
+   eng "Cannot execute statement: impossible to write to binary log since more than one engine is involved and at least one engine is self-logging."
+-
+ ER_BINLOG_UNSAFE_LIMIT
+   eng "The statement is unsafe because it uses a LIMIT clause. This is unsafe because the set of rows included cannot be predicted."
+ ER_BINLOG_UNSAFE_INSERT_DELAYED
+@@ -6330,10 +6329,8 @@
+   eng "Statement is unsafe because it uses a system function that may return a different value on the slave."
+ ER_BINLOG_UNSAFE_NONTRANS_AFTER_TRANS
+   eng "Statement is unsafe because it accesses a non-transactional table after accessing a transactional table within the same transaction."
+-
+ ER_MESSAGE_AND_STATEMENT
+   eng "%s Statement: %s"
+-
+ ER_SLAVE_CONVERSION_FAILED
+   eng "Column %d of table '%-.192s.%-.192s' cannot be converted from type '%-.32s' to type '%-.32s'"
+ ER_SLAVE_CANT_CREATE_CONVERSION
+@@ -6486,3 +6483,13 @@
+ 
+ ER_PLUGIN_NO_INSTALL
+   eng "Plugin '%s' is marked as not dynamically installable. You have to stop the server to install it."
++
++ER_COL_COUNT_DOESNT_MATCH_CORRUPTED_V2 
++  eng "Column count of %s.%s is wrong. Expected %d, found %d. The table is probably corrupted" 
++  ger "Spaltenanzahl von %s.%s falsch. %d erwartet, aber %d gefunden. Tabelle ist wahrscheinlich beschädigt"
++
++ER_RPL_INFO_DATA_TOO_LONG 
++  eng "Data for column '%s' too long"
++ER_CANT_LOCK_RPL_INFO_TABLE 
++  eng "You can't use locks with rpl info tables."
++
+Index: sql/rpl_info_fake.cc
+===================================================================
+--- sql/rpl_info_fake.cc	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_fake.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,7 @@
++#include "rpl_info_fake.h"
++
++Rpl_info_fake::Rpl_info_fake()
++:Rpl_info_handler(0)
++{}
++
++Rpl_info_fake::~Rpl_info_fake(){}
+Index: sql/server_ids.h
+===================================================================
+--- sql/server_ids.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/server_ids.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,20 @@
++#ifndef SERVER_ID_H
++
++#define SERVER_ID_H
++
++#include <my_sys.h>
++#include <sql_string.h>
++
++class Server_ids
++{
++  public:
++    DYNAMIC_ARRAY server_ids;
++
++    Server_ids();
++    ~Server_ids();
++
++    bool pack_server_ids(String *buffer);
++    bool unpack_server_ids(char *param_server_ids);
++};
++
++#endif
+Index: sql/log_event.cc
+===================================================================
+--- sql/log_event.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/log_event.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -51,6 +51,7 @@
+ #include <base64.h>
+ #include <my_bitmap.h>
+ #include "rpl_utility.h"
++#include "debug_sync.h"
+ 
+ #define log_cs	&my_charset_latin1
+ 
+@@ -65,7 +66,10 @@
+ */
+ #define FMT_G_BUFSIZE(PREC) (3 + (PREC) + 5 + 1)
+ 
+-
++ulong batch_commit_count = 0;
++ulong commit_num = 0;
++ulong commit_sum = 0;
++ulong batch_commit_max = 1;
+ #if !defined(MYSQL_CLIENT) && defined(HAVE_REPLICATION)
+ static int rows_event_stmt_cleanup(Relay_log_info const *rli, THD* thd);
+ 
+@@ -2199,9 +2203,32 @@
+   uchar buf[QUERY_HEADER_LEN + MAX_SIZE_LOG_EVENT_STATUS];
+   uchar *start, *start_of_status;
+   ulong event_length;
+-
++  DBUG_ENTER("Query_log_event::write");
+   if (!query)
+-    return 1;                                   // Something wrong with event
++  {
++	DBUG_RETURN(1);                                   // Something wrong with event
++  }
++/*
++  if(current_thd->system_thread==SYSTEM_THREAD_SLAVE_SQL)
++  {
++    if(batch_commit_max > 1 && opt_enable_table_relay_info != 1)
++    {
++	  batch_commit_max = 1;
++	  sql_print_warning("batch_commit_max is automaticly set to 1 while enable_table_relay_info is 0!!");
++    }	
++    DBUG_PRINT("innosql",("Query_log_event::write %s commit_num:%ld",query,commit_num));
++    //batch commit
++	if(0== strcmp("BEGIN", query) && (0!=commit_num))
++	{
++	  DBUG_RETURN(0);
++	}
++    if((0==strcmp("COMMIT", query))&&
++	 (commit_num+1 < batch_commit_max))
++    {
++	  DBUG_RETURN(0);
++    }
++  }
++*/
+ 
+   /*
+     We want to store the thread id:
+@@ -2410,13 +2437,13 @@
+   */
+   event_length= (uint) (start-buf) + get_post_header_size_for_derived() + db_len + 1 + q_len;
+ 
+-  return (write_header(file, event_length) ||
++  DBUG_RETURN( (write_header(file, event_length) ||
+           my_b_safe_write(file, (uchar*) buf, QUERY_HEADER_LEN) ||
+           write_post_header_for_derived(file) ||
+           my_b_safe_write(file, (uchar*) start_of_status,
+                           (uint) (start-start_of_status)) ||
+           my_b_safe_write(file, (db) ? (uchar*) db : (uchar*)"", db_len + 1) ||
+-          my_b_safe_write(file, (uchar*) query, q_len)) ? 1 : 0;
++          my_b_safe_write(file, (uchar*) query, q_len)) ? 1 : 0);
+ }
+ 
+ /**
+@@ -3171,7 +3198,45 @@
+   LEX_STRING new_db;
+   int expected_error,actual_error= 0;
+   HA_CREATE_INFO db_options;
++  DBUG_ENTER("Query_log_event::do_apply_event");
++  DBUG_PRINT("rlh",("%s",query));
++  if (strcmp("BEGIN", query) == 0 && 
++  	  (thd->variables.option_bits & OPTION_BEGIN))/*batch commit*/
++  {
++	DBUG_PRINT("rlh",("skip BEGIN")); 
++	DBUG_RETURN(thd->is_slave_error); 
++  }
+ 
++  if(0 == strcmp("COMMIT", query))
++  {
++	Relay_log_info *rli_p= const_cast<Relay_log_info *>(rli);
++	bool is_trans_repo= rli_p->is_transactional();
++	if(is_trans_repo)
++	{ /*update slave_relay_log_info*/
++	  if(rli_p->write_table_event(log_pos))
++		goto end;
++	}
++	if(batch_commit_max > 1 && opt_enable_table_relay_info != 1)
++	{
++	  batch_commit_max = 1;
++	  sql_print_warning("batch_commit_max is automaticly set to 1 for enable_table_relay_info is OFF!!");
++	}	
++	/*batch commit*/
++	bool need_commit = (++commit_num >=batch_commit_max);
++	if DBUG_EVALUATE_IF("skip_relay_end", 0, 1)
++	{
++	  need_commit = need_commit || rli_p->reach_relay_log_end(log_pos);
++	}
++	commit_sum++;
++	if(0 == need_commit)
++	{
++	 DBUG_PRINT("rlh",("skip COMMIT"));
++	 DBUG_RETURN(thd->is_slave_error);
++	}
++	commit_num = 0;
++	batch_commit_count++;
++  }
++
+   /*
+     Colleagues: please never free(thd->catalog) in MySQL. This would
+     lead to bugs as here thd->catalog is a part of an alloced block,
+@@ -3204,9 +3269,8 @@
+     access it.
+   */
+   const_cast<Relay_log_info*>(rli)->future_group_master_log_pos= log_pos;
+-  DBUG_PRINT("info", ("log_pos: %lu", (ulong) log_pos));
+-
+   clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
++  DBUG_EXECUTE_IF("crash_before_commit_relay", DBUG_SUICIDE(););
+   if (strcmp("COMMIT", query) == 0 && rli->tables_to_lock)
+   {
+     /*
+@@ -3214,25 +3278,27 @@
+       the terminal event of the current statement flagged with
+       STMT_END_F got filtered out in ndb circular replication.
+     */
+-    int error;
+-    char llbuff[22];
+-    if ((error= rows_event_stmt_cleanup(const_cast<Relay_log_info*>(rli), thd)))
+-    {
+-      const_cast<Relay_log_info*>(rli)->report(ERROR_LEVEL, error,
++	int error;
++	char llbuff[22];
++	if ((error= rows_event_stmt_cleanup(const_cast<Relay_log_info*>(rli), thd)))
++	{
++		const_cast<Relay_log_info*>(rli)->report(ERROR_LEVEL, error,
+                   "Error in cleaning up after an event preceeding the commit; "
+                   "the group log file/position: %s %s",
+                   const_cast<Relay_log_info*>(rli)->group_master_log_name,
+                   llstr(const_cast<Relay_log_info*>(rli)->group_master_log_pos,
+                         llbuff));
+-    }
++	}
+     /*
+       Executing a part of rli->stmt_done() logics that does not deal
+       with group position change. The part is redundant now but is 
+       future-change-proof addon, e.g if COMMIT handling will start checking
+       invariants like IN_STMT flag must be off at committing the transaction.
+     */
+-    const_cast<Relay_log_info*>(rli)->inc_event_relay_log_pos();
+-    const_cast<Relay_log_info*>(rli)->clear_flag(Relay_log_info::IN_STMT);
++
++	Relay_log_info *rli_ptr= const_cast<Relay_log_info *>(rli);
++    rli_ptr->inc_event_relay_log_pos();
++    rli_ptr->clear_flag(Relay_log_info::IN_STMT);
+   }
+   else
+   {
+@@ -3528,7 +3594,8 @@
+   }
+ 
+ end:
+-  /*
++	
++ /*
+     Probably we have set thd->query, thd->db, thd->catalog to point to places
+     in the data_buf of this event. Now the event is going to be deleted
+     probably, so data_buf will be freed, so the thd->... listed above will be
+@@ -3553,16 +3620,38 @@
+   thd->first_successful_insert_id_in_prev_stmt= 0;
+   thd->stmt_depends_on_first_successful_insert_id_in_prev_stmt= 0;
+   free_root(thd->mem_root,MYF(MY_KEEP_PREALLOC));
+-  return thd->is_slave_error;
++  DBUG_RETURN(thd->is_slave_error);
+ }
+ 
+ int Query_log_event::do_update_pos(Relay_log_info *rli)
+ {
+   /*
++   it will not set group_master_log_name in rotate event
++   when in a batch transcation group
++  */
++ bool need_commit = 1;
++ if(0 == strcmp("COMMIT", query))
++  {
++	Relay_log_info *rli_ptr= const_cast<Relay_log_info *>(rli);
++	need_commit = (commit_num >= batch_commit_max);
++	if DBUG_EVALUATE_IF("skip_relay_end", 0, 1)
++	{ 
++		need_commit = need_commit || rli_ptr->reach_relay_log_end(log_pos);
++	}
++	if(need_commit &&
++		(0!= strcmp(rli->tmp_group_master_log_name, rli->group_master_log_name)))
++	{
++	  strmake(rli_ptr->group_master_log_name,rli_ptr->tmp_group_master_log_name,
++			sizeof(rli_ptr->group_master_log_name)-1);
++	  rli_ptr->notify_group_master_log_name_update();
++	}
++  }
++  /*
+     Note that we will not increment group* positions if we are just
+     after a SET ONE_SHOT, because SET ONE_SHOT should not be separated
+     from its following updating query.
+   */
++ 
+   if (thd->one_shot_set)
+   {
+     rli->inc_event_relay_log_pos();
+@@ -5174,8 +5263,23 @@
+                       (ulong) this->server_id, (ulong) ::server_id));
+   DBUG_PRINT("info", ("new_log_ident: %s", this->new_log_ident));
+   DBUG_PRINT("info", ("pos: %s", llstr(this->pos, buf)));
+-
+   /*
++    If we are in a batich commit group,we may skip ROTATE event,then miss 
++	the new master binlog name
++	BEGIN
++	...
++	XID (skip)
++	ROTATE
++	BEGIN (skip)
++	...
++	XID
++  */
++  if((server_id != ::server_id || rli->replicate_same_server_id) &&
++		!is_relay_log_event())
++  { 
++	memcpy(rli->tmp_group_master_log_name, new_log_ident, ident_len+1);
++  }
++  /*
+     If we are in a transaction or in a group: the only normal case is
+     when the I/O thread was copying a big transaction, then it was
+     stopped and restarted: we have this in the relay log:
+@@ -5226,7 +5330,6 @@
+   else
+     rli->inc_event_relay_log_pos();
+ 
+-
+   DBUG_RETURN(0);
+ }
+ 
+@@ -5541,6 +5644,14 @@
+ #ifndef MYSQL_CLIENT
+ bool Xid_log_event::write(IO_CACHE* file)
+ {
++  /*  
++  DBUG_PRINT("innosql",("Xid_log_event::write need_commit:%d",need_commit));
++  if((current_thd->system_thread==SYSTEM_THREAD_SLAVE_SQL)&&
++	 (!need_commit))
++  {	
++	return 0;
++  }
++ */
+   DBUG_EXECUTE_IF("do_not_write_xid", return 0;);
+   return write_header(file, sizeof(xid)) ||
+          my_b_safe_write(file, (uchar*) &xid, sizeof(xid));
+@@ -5570,14 +5681,106 @@
+ #if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
+ int Xid_log_event::do_apply_event(Relay_log_info const *rli)
+ {
+-  bool res;
++  int error= 0;
++  DBUG_ENTER("Xid_log_event::do_apply_event");
++  Relay_log_info *rli_ptr= const_cast<Relay_log_info *>(rli);
++
++  /*
++    If the repository is transactional, i.e., created over a
++    transactional table, we need to update the positions within
++    the context of the current transaction in order to provide
++    data integrity. See sql/rpl_rli.h for further details.
++  */
++  bool is_trans_repo= rli_ptr->is_transactional();
++  if(batch_commit_max > 1 && opt_enable_table_relay_info != 1)
++  {
++	batch_commit_max = 1;
++	sql_print_warning("batch_commit_max is automaticly set to 1 enable_table_relay_info is OFF!!");
++  }
++  bool need_commit = (++commit_num >= (ulong)batch_commit_max);
++  if DBUG_EVALUATE_IF("skip_relay_end", 0, 1)
++  { 
++	need_commit = need_commit || rli_ptr->reach_relay_log_end(log_pos);
++  }
++  commit_sum++;
+   /* For a slave Xid_log_event is COMMIT */
+   general_log_print(thd, COM_QUERY,
+                     "COMMIT /* implicit, from Xid_log_event */");
+-  res= trans_commit(thd); /* Automatically rolls back on error. */
++
++  if (is_trans_repo)
++  {
++    mysql_mutex_lock(&rli_ptr->data_lock);
++  }
++
++  DBUG_PRINT("info", ("do_apply group master %s %lu  group relay %s %lu event %s %lu\n",
++    rli_ptr->get_group_master_log_name(),
++    (ulong) rli_ptr->get_group_master_log_pos(),
++    rli_ptr->get_group_relay_log_name(),
++    (ulong) rli_ptr->get_group_relay_log_pos(),
++    rli_ptr->get_event_relay_log_name(),
++    (ulong) rli_ptr->get_event_relay_log_pos()));
++
++  DBUG_EXECUTE_IF("crash_before_update_pos", DBUG_SUICIDE(););
++
++  /*
++    We need to update the positions in here to make it transactional.  
++  */
++  if (is_trans_repo)
++  {
++    rli_ptr->inc_event_relay_log_pos();
++	if(need_commit)
++    {
++      rli_ptr->set_group_relay_log_pos(rli_ptr->get_event_relay_log_pos());
++      rli_ptr->set_group_relay_log_name(rli_ptr->get_event_relay_log_name());
++      rli_ptr->notify_group_relay_log_name_update();
++      if (log_pos) // 3.23 binlogs don't have log_posx
++      {
++        rli_ptr->set_group_master_log_pos(log_pos);
++      }
++	}
++	
++    if ((error= rli_ptr->write_table_event(log_pos)))
++      goto err;
++
++  }
++
++  DBUG_PRINT("info", ("do_apply group master %s %lu  group relay %s %lu event %s %lu\n",
++    rli_ptr->get_group_master_log_name(),
++    (ulong) rli_ptr->get_group_master_log_pos(),
++    rli_ptr->get_group_relay_log_name(),
++    (ulong) rli_ptr->get_group_relay_log_pos(),
++    rli_ptr->get_event_relay_log_name(),
++    (ulong) rli_ptr->get_event_relay_log_pos()));
++
++  DBUG_EXECUTE_IF("crash_after_update_pos_before_apply", DBUG_SUICIDE(););
++  if(need_commit)
++  {
++    commit_num = 0;
++	batch_commit_count++;
++    error= trans_commit(thd); /* Automatically rolls back on error. */
++  }
++  DBUG_EXECUTE_IF("crash_after_apply", DBUG_SUICIDE(););
+   thd->mdl_context.release_transactional_locks();
++  /*
++	it will not set group_master_log_name in rotate event
++    when in a batch transcation group
++  */
++  if(need_commit &&
++    (0!= strcmp(rli->tmp_group_master_log_name, rli->group_master_log_name)))
++  {
++    strmake(rli_ptr->group_master_log_name,rli_ptr->tmp_group_master_log_name, 
++		sizeof(rli_ptr->group_master_log_name)-1);
++    rli_ptr->notify_group_master_log_name_update();
++  }
+ 
+-  return res;
++err:
++  if (is_trans_repo)
++  {
++   mysql_cond_broadcast(&rli_ptr->data_cond);
++   mysql_mutex_unlock(&rli_ptr->data_lock);
++  }
++  
++  DBUG_RETURN(error);
+ }
+ 
+ Log_event::enum_skip_reason
+Index: sql/sql_repl.cc
+===================================================================
+--- sql/sql_repl.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_repl.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -1338,6 +1338,7 @@
+     goto err;
+   }
+ 
++  mi->rli.handler->remove_info();
+   RUN_HOOK(binlog_relay_io, after_reset_slave, (thd, mi));
+ err:
+   unlock_slave_threads(mi);
+@@ -1656,6 +1657,9 @@
+   strmake(mi->rli.group_master_log_name,mi->master_log_name,
+ 	  sizeof(mi->rli.group_master_log_name)-1);
+ 
++  strmake(mi->rli.tmp_group_master_log_name,mi->master_log_name, 
++	 		sizeof(mi->rli.tmp_group_master_log_name)-1);
++
+   if (!mi->rli.group_master_log_name[0]) // uninitialized case
+     mi->rli.group_master_log_pos=0;
+ 
+Index: sql/rpl_rli.h
+===================================================================
+--- sql/rpl_rli.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/rpl_rli.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -21,10 +21,12 @@
+ #include "rpl_utility.h"
+ #include "log.h"                         /* LOG_INFO, MYSQL_BIN_LOG */
+ #include "sql_class.h"                   /* THD */
++#include "rpl_info_handler.h"
+ 
+ struct RPL_TABLE_LIST;
+ class Master_info;
+ extern uint sql_slave_skip_counter;
++static const int LINES_IN_RELAY_LOG_INFO_WITH_DELAY= 4;
+ 
+ /****************************************************************************
+ 
+@@ -65,7 +67,8 @@
+     /** Flag counter.  Should always be last */
+     STATE_FLAGS_COUNT
+   };
+-
++  
++  Rpl_info_handler *handler;
+   /*
+     If flag set, then rli does not store its state in any info file.
+     This is the case only when we execute BINLOG SQL commands inside
+@@ -192,6 +195,7 @@
+      beginning of the group.
+   */
+   char group_master_log_name[FN_REFLEN];
++  char tmp_group_master_log_name[FN_REFLEN];
+   volatile my_off_t group_master_log_pos;
+ 
+   /*
+@@ -217,8 +221,16 @@
+ 
+   time_t last_master_timestamp;
+ 
++  size_t get_number_info_rli_fields();
++  bool read_table_info();
++  bool write_table_info();
++  bool write_file_info();
++  bool write_table_event(ulonglong log_pos);
++
++  bool read_file_info(const char* info_fname);
+   void clear_until_condition();
+-
++  bool flush_info();
++  bool reach_relay_log_end(my_off_t log_pos);
+   /*
+     Needed for problems when slave stops and we want to restart it
+     skipping one or more events in the master log that have caused
+@@ -312,7 +324,7 @@
+     if (until_condition==UNTIL_RELAY_POS)
+       until_log_names_cmp_result= UNTIL_LOG_NAMES_CMP_UNKNOWN;
+   }
+-
++  
+   /*
+     The same as previous but for group_master_log_name. 
+   */
+@@ -321,6 +333,40 @@
+     if (until_condition==UNTIL_MASTER_POS)
+       until_log_names_cmp_result= UNTIL_LOG_NAMES_CMP_UNKNOWN;
+   }
++
++  inline bool is_transactional()
++  {
++    return (handler->is_transactional());
++  }
++
++  inline const char* get_group_master_log_name() { return group_master_log_name; }
++  inline ulonglong get_group_master_log_pos() { return group_master_log_pos; }
++  inline void set_group_master_log_name(const char *log_file_name)
++  {
++     strmake(group_master_log_name,log_file_name, sizeof(group_master_log_name)-1);
++  }
++  inline void set_group_master_log_pos(ulonglong log_pos)
++  {
++    group_master_log_pos= log_pos;
++  }
++
++  inline const char* get_group_relay_log_name() { return group_relay_log_name; }
++  inline ulonglong get_group_relay_log_pos() { return group_relay_log_pos; }
++  inline void set_group_relay_log_name(const char *log_file_name)
++  {
++     strmake(group_relay_log_name,log_file_name, sizeof(group_relay_log_name)-1);
++  }
++  inline void set_group_relay_log_name(const char *log_file_name, size_t len)
++  {
++     strmake(group_relay_log_name, log_file_name, len);
++  }
++  inline void set_group_relay_log_pos(ulonglong log_pos)
++  {
++    group_relay_log_pos= log_pos;
++  }
++
++  inline const char* get_event_relay_log_name() { return event_relay_log_name; }
++  inline ulonglong get_event_relay_log_pos() { return event_relay_log_pos; }
+   
+   inline void inc_event_relay_log_pos()
+   {
+Index: sql/rpl_info_table.cc
+===================================================================
+--- sql/rpl_info_table.cc	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_table.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,499 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#include "rpl_info_table.h"
++#include "rpl_utility.h"
++#include "sql_parse.h"
++
++#define KEY_ID 1
++
++Rpl_info_table::Rpl_info_table(uint nparam, uint param_field_idx,
++                               const char* param_schema,
++                               const char *param_table)
++:Rpl_info_handler(nparam), field_idx(param_field_idx)
++{
++  str_schema.str= str_table.str= NULL;
++  str_schema.length= str_table.length= 0;
++
++  uint schema_length= strlen(param_schema);
++  if ((str_schema.str= (char *) my_malloc(schema_length + 1, MYF(0))))
++  {
++    str_schema.length= schema_length;
++    strmake(str_schema.str, param_schema, schema_length);
++  }
++  
++  uint table_length= strlen(param_table);
++  if ((str_table.str= (char *) my_malloc(table_length + 1, MYF(0))))
++  {
++    str_table.length= table_length;
++    strmake(str_table.str, param_table, table_length);
++  }
++
++  if ((description= (char *)
++      my_malloc(str_schema.length + str_table.length + 2, MYF(0))))
++  {
++    char *pos= strmov(description, param_schema);
++    pos= strmov(pos, ".");
++    pos= strmov(pos, param_table);
++  }
++
++  access= new Rpl_info_table_access();
++}
++
++Rpl_info_table::~Rpl_info_table()
++{
++  if (access)
++    delete access;
++  
++  if (description)
++    my_free(description);
++
++  if (str_table.str)
++    my_free(str_table.str);
++
++  if (str_schema.str)
++    my_free(str_schema.str);
++}
++
++int Rpl_info_table::do_init_info()
++{
++  int error= 1;
++  int res= FOUND_ID;
++  TABLE *table= NULL;
++  ulong saved_mode;
++  Open_tables_backup backup;
++
++  DBUG_ENTER("Rlp_info_table::do_init_info");
++
++  THD *thd= access->create_thd();
++
++  saved_mode= thd->variables.sql_mode;
++  tmp_disable_binlog(thd);
++
++  /*
++    Opens and locks the rpl_info table before accessing it.
++  */
++  if (access->open_table(thd, str_schema, str_table,
++                         get_number_info(), TL_WRITE,
++                         &table, &backup))
++    goto end;
++
++  /*
++    Points the cursor at the row to be read where the master_id equals to
++    the server_id.
++  */
++  if ((res= access->find_info_for_server_id(KEY_ID, field_idx,
++  	                                        field_values, table)) == FOUND_ID)
++  {
++    /*
++      Reads the information stored in the rpl_info table into a
++      set of variables. If there is a failure, an error is returned.
++      Then executes some initialization routines.
++    */
++    if (access->load_info_values(get_number_info(), table->field,
++                                 field_values))
++      goto end;
++  }
++  error= (res == ERROR_ID);
++end:
++  /*
++    Unlocks and closes the rpl_info table.
++  */
++  access->close_table(thd, table, &backup, error);
++  reenable_binlog(thd);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  DBUG_RETURN(error);
++}
++
++int Rpl_info_table::do_flush_info(const bool force)
++{
++  int error= 1;
++  int res= FOUND_ID;
++  TABLE *table= NULL;
++  ulong saved_mode;
++  Open_tables_backup backup;
++
++  DBUG_ENTER("Rpl_info_table::do_flush_info");
++
++  if (!(force || (sync_period &&
++      ++(sync_counter) >= sync_period)))
++    DBUG_RETURN(0);
++
++  THD *thd= access->create_thd();
++
++  sync_counter= 0;
++  saved_mode= thd->variables.sql_mode;
++  tmp_disable_binlog(thd);
++
++  /*
++    Opens and locks the rpl_info table before accessing it.
++  */
++  if (access->open_table(thd, str_schema, str_table,
++                         get_number_info(), TL_WRITE,
++                         &table, &backup))
++    goto end;
++
++  /*
++    Points the cursor at the row to be read where the master_id
++    equals to the server_id. If the row is not found an error is
++    reported.
++  */
++  if ((res= access->find_info_for_server_id(KEY_ID, field_idx,
++  											field_values, table)) == NOT_FOUND_ID)
++  {
++    /*
++      Prepares the information to be stored before calling ha_write_row.
++    */
++    empty_record(table);
++    if (access->store_info_values(get_number_info(), table->field,
++                                  field_values))
++      goto end;
++    /*
++      Inserts a new row into rpl_info table.
++    */
++    if ((error= table->file->ha_write_row(table->record[0])))
++    {
++      table->file->print_error(error, MYF(0));
++      /*
++        This makes sure that the error is 1 and not the status returned
++        by the handler.
++      */
++      error= 1;
++      goto end;
++    }
++    error= 0;
++  }
++  else if (res == FOUND_ID)
++  {
++    /*
++      Prepares the information to be stored before calling ha_update_row.
++    */
++    store_record(table, record[1]);
++    table->timestamp_field_type= TIMESTAMP_NO_AUTO_SET;
++    if (access->store_info_values(get_number_info(), table->field,
++                                  field_values))
++      goto end;
++ 
++    /*
++      Updates a row in the rpl_info table.
++    */
++    if ((error= table->file->ha_update_row(table->record[1], table->record[0])) &&
++        error != HA_ERR_RECORD_IS_THE_SAME)
++    {
++      table->file->print_error(error, MYF(0));
++      /*
++        This makes sure that the error is 1 and not the status returned
++        by the handler.
++      */
++      error= 1;
++      goto end;
++    }
++    error= 0;
++  }
++
++end:
++  /*
++    Unlocks and closes the rpl_info table.
++  */
++  access->close_table(thd, table, &backup, error);
++  reenable_binlog(thd);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  DBUG_RETURN(error);
++}
++
++int Rpl_info_table::do_remove_info()
++{
++  int error= 1;
++  int res= FOUND_ID;
++  TABLE *table= NULL;
++  ulong saved_mode;
++  Open_tables_backup backup;
++
++  DBUG_ENTER("Rpl_info_table::do_remove_info");
++
++  THD *thd= access->create_thd();
++
++  saved_mode= thd->variables.sql_mode;
++  tmp_disable_binlog(thd);
++
++  /*
++    Opens and locks the rpl_info table before accessing it.
++  */
++  if (access->open_table(thd, str_schema, str_table,
++                         get_number_info(), TL_WRITE,
++                         &table, &backup))
++    goto end;
++
++  /*
++    Points the cursor at the row to be deleted where the the master_id
++    equals to the server_id. If the row is not found, the execution
++    proceeds normally.
++  */
++  if ((res= access->find_info_for_server_id(KEY_ID, field_idx,
++                                            field_values, table)) == FOUND_ID)
++  {
++    /*
++      Deletes a row in the rpl_info table.
++    */
++    if ((error= table->file->ha_delete_row(table->record[0])))
++    {
++      table->file->print_error(error, MYF(0));
++      goto end;
++    }
++  }
++  error= (res == ERROR_ID);
++end:
++  /*
++    Unlocks and closes the rpl_info table.
++  */
++  access->close_table(thd, table, &backup, error);
++  reenable_binlog(thd);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  DBUG_RETURN(error);
++}
++
++int Rpl_info_table::do_check_info()
++{
++  int error= 1;
++  TABLE *table= NULL;
++  ulong saved_mode;
++  Open_tables_backup backup;
++
++  DBUG_ENTER("Rpl_info_table::do_check_info");
++
++  THD *thd= access->create_thd();
++
++  saved_mode= thd->variables.sql_mode;
++
++  /*
++    Opens and locks the rpl_info table before accessing it.
++  */
++  if (access->open_table(thd, str_schema, str_table,
++                         get_number_info(), TL_READ,
++                         &table, &backup))
++   {
++	goto end;
++	}
++
++  /*
++    Points the cursor at the row to be deleted where the the master_id
++    equals to the server_id. If the row is not found, an error is
++    reported.
++  */
++  error = access->find_info_for_server_id(KEY_ID, field_idx,field_values, table);
++  if(error != FOUND_ID)
++  {
++    /* 
++       We cannot simply call my_error here because it does not
++       really means that there was a failure but only that the
++       record was not found.
++    */
++    goto end;
++  }
++  error= 0;
++
++end:
++  /*
++    Unlocks and closes the rpl_info table.
++  */
++  access->close_table(thd, table, &backup, error);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  sql_print_information("check_info:%d",error);
++  DBUG_RETURN(error);
++}
++
++void Rpl_info_table::do_end_info()
++{
++}
++
++int Rpl_info_table::do_prepare_info_for_read()
++{
++  if (!field_values)
++    return TRUE;
++
++  cursor= 1;
++
++  return FALSE;
++}
++
++int Rpl_info_table::do_prepare_info_for_write()
++{
++  return(do_prepare_info_for_read());
++}
++
++bool Rpl_info_table::do_set_info(const int pos, const char *value)
++{
++  return (field_values->value[pos].copy(value, strlen(value),
++                                        &my_charset_bin));
++}
++
++bool Rpl_info_table::do_set_info(const int pos, const ulong value)
++{
++  return (field_values->value[pos].set_int(value, TRUE,
++                                           &my_charset_bin));
++}
++
++bool Rpl_info_table::do_set_info(const int pos, const int value)
++{
++  return (field_values->value[pos].set_int(value, FALSE,
++                                           &my_charset_bin));
++}
++
++bool Rpl_info_table::do_set_info(const int pos, const float value)
++{
++  return (field_values->value[pos].set_real(value, NOT_FIXED_DEC,
++                                            &my_charset_bin));
++}
++
++bool Rpl_info_table::do_set_info(const int pos, const Server_ids *value)
++{
++  if (const_cast<Server_ids *>(value)->pack_server_ids(&field_values->value[pos]))
++    return TRUE;
++
++  return FALSE;
++}
++
++bool Rpl_info_table::do_get_info(const int pos, char *value, const size_t size,
++                                 const char *default_value)
++{
++  if (field_values->value[pos].length())
++    strmake(value, field_values->value[pos].c_ptr_safe(),
++            field_values->value[pos].length());
++  else if (default_value)
++    strmake(value, default_value, strlen(default_value));
++  else
++    *value= '\0';
++
++  return FALSE;
++}
++
++bool Rpl_info_table::do_get_info(const int pos, ulong *value,
++                                 const ulong default_value)
++{
++  if (field_values->value[pos].length())
++  {
++    *value= strtoul(field_values->value[pos].c_ptr_safe(), 0, 10);
++    return FALSE;
++  }
++  else if (default_value)
++  {
++    *value= default_value;
++    return FALSE;
++  }
++
++  return TRUE;
++}
++
++bool Rpl_info_table::do_get_info(const int pos, int *value,
++                                 const int default_value)
++{
++  if (field_values->value[pos].length())
++  {
++    *value=  atoi(field_values->value[pos].c_ptr_safe());
++    return FALSE;
++  }
++  else if (default_value)
++  {
++    *value= default_value;
++    return FALSE;
++  }
++
++  return TRUE;
++}
++
++bool Rpl_info_table::do_get_info(const int pos, float *value,
++                                 const float default_value)
++{
++  if (field_values->value[pos].length())
++  {
++    if (sscanf(field_values->value[pos].c_ptr_safe(), "%f", value) != 1)
++      return TRUE;
++    return FALSE;
++  }
++  else if (default_value != 0.0)
++  {
++    *value= default_value;
++    return FALSE;
++  }
++
++  return TRUE;
++}
++
++bool Rpl_info_table::do_get_info(const int pos, Server_ids *value,
++                                 const Server_ids *default_value __attribute__((unused)))
++{
++  if (value->unpack_server_ids(field_values->value[pos].c_ptr_safe()))
++    return TRUE;
++
++  return FALSE;
++}
++
++char* Rpl_info_table::do_get_description_info()
++{
++  return description;
++}
++
++bool Rpl_info_table::do_is_transactional()
++{
++  ulong saved_mode;
++  TABLE *table= NULL;
++  Open_tables_backup backup;
++  bool is_trans= FALSE;
++
++  DBUG_ENTER("Rpl_info_table::do_is_transactional");
++
++  THD *thd= access->create_thd();
++
++  saved_mode= thd->variables.sql_mode;
++
++  /*
++    Opens and locks the rpl_info table before accessing it.
++  */
++  if (!access->open_table(thd, str_schema, str_table,
++                          get_number_info(), TL_READ,
++                          &table, &backup))
++    is_trans= table->file->has_transactions();
++
++  access->close_table(thd, table, &backup, 0);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  DBUG_RETURN(is_trans);
++}
++
++bool Rpl_info_table::change_engine(const char *engine)
++{
++  bool error= TRUE;
++  ulong saved_mode;
++
++  DBUG_ENTER("Rpl_info_table::do_check_info");
++
++  THD *thd= access->create_thd();
++
++  saved_mode= thd->variables.sql_mode;
++  tmp_disable_binlog(thd);
++
++  /* TODO: Change the engine using internal functions */
++
++  error= FALSE;
++
++  reenable_binlog(thd);
++  thd->variables.sql_mode= saved_mode;
++  access->drop_thd(thd);
++  DBUG_RETURN(error);
++}
+Index: sql/sys_vars.cc
+===================================================================
+--- sql/sys_vars.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sys_vars.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -143,6 +143,12 @@
+   NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(NULL), ON_UPDATE(NULL), \
+   0, NULL, sys_var::PARSE_EARLY
+ 
++static Sys_var_mybool Sys_enable_table_relay_info(
++		"enable_table_relay_info",
++		"store relay info in innodb table",
++		READ_ONLY GLOBAL_VAR(opt_enable_table_relay_info),
++		CMD_LINE(OPT_ARG),DEFAULT(FALSE));
++
+ static Sys_var_mybool Sys_pfs_enabled(
+        "performance_schema",
+        "Enable the performance schema.",
+@@ -272,6 +278,13 @@
+ 
+ #endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
+ 
++static Sys_var_ulong Sys_batch_commit_max(
++       "batch_commit_max",
++       "Perform one commit operation for this transcations",
++       GLOBAL_VAR(batch_commit_max),
++       CMD_LINE(OPT_ARG),
++       VALID_RANGE(1, 65535), DEFAULT(1), BLOCK_SIZE(1));
++
+ static Sys_var_ulong Sys_auto_increment_increment(
+        "auto_increment_increment",
+        "Auto-increment columns are incremented by this",
+Index: sql/rpl_mi.cc
+===================================================================
+--- sql/rpl_mi.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/rpl_mi.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -406,6 +406,8 @@
+                             mi->master_log_name,
+                             (ulong) mi->master_log_pos));
+ 
++  mi->master_last_commit_pos= 0;
++
+   mi->rli.mi = mi;
+   if (init_relay_log_info(&mi->rli, slave_info_fname))
+     goto err;
+Index: sql/sql_base.cc
+===================================================================
+--- sql/sql_base.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_base.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -4170,6 +4170,7 @@
+   ulong binlog_format= thd->variables.binlog_format;
+   if ((log_on == FALSE) || (binlog_format == BINLOG_FORMAT_ROW) ||
+       (table_list->table->s->table_category == TABLE_CATEGORY_LOG) ||
++      (table_list->table->s->table_category == TABLE_CATEGORY_RPL_INFO) ||
+       (table_list->table->s->table_category == TABLE_CATEGORY_PERFORMANCE) ||
+       !(is_update_query(prelocking_ctx->sql_command) ||
+         table_list->prelocking_placeholder ||
+Index: sql/rpl_info_handler.h
+===================================================================
+--- sql/rpl_info_handler.h	(.../mysql-5.5.20_relay.info_table)	(revision 0)
++++ sql/rpl_info_handler.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -0,0 +1,324 @@
++/* Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++#ifndef RPL_INFO_HANDLER_H
++#define RPL_INFO_HANDLER_H
++
++#include <my_global.h>
++#include <server_ids.h>
++#include "rpl_info_values.h"
++
++class Rpl_info_handler
++{
++public:
++  Rpl_info_handler(const int nparam);
++  virtual ~Rpl_info_handler();
++
++  /**
++    After creating an object and assembling components, this method is
++    used to initialize internal structures. Everything that does not
++    depend on other components (e.g. mutexes) should be placed in the
++    object's constructor though. 
++
++    @retval FALSE success,
++    @retval TRUE  otherwise error.
++  */
++  int init_info()
++  {
++    return do_init_info();
++  }
++
++  /**
++    Checks if any necessary dependency is satisfied such as a
++    file exists.
++
++    @retval FALSE success,
++    @retval TRUE  otherwise error.
++  */
++  int check_info()
++  {
++    return do_check_info();
++  }
++  /**
++    Flushes and syncs in-memory information into a stable storage (i.e.
++    repository). Usually, syncing after flushing depends on other options
++    such as @c relay-log-info-sync, @c master-info-sync. These options
++    dictate after how many events or transactions the information
++    should be synced. We can ignore them and always sync by setting the
++    parameter @c force, which is by default @c false, to @c true.
++
++    So if the number of events is below a threshold, the parameter
++    @c force is FALSE and we are using a file system as a storage
++    system, it may happen that the changes will only end up in the
++    operating system's cache and a crash may lead to inconsistencies.
++
++    @param[in] force Always sync the information.
++
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  int flush_info(const bool force)
++  {
++    return do_flush_info(force);
++  }
++
++  /**
++    Deletes any information in the repository.
++
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  int remove_info()
++  {
++    return do_remove_info();
++  }
++
++  /**
++    Closes access to the repository.
++
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  void end_info()
++  {
++    do_end_info();
++  }
++
++  /**
++    Enables the storage system to receive reads, i.e.
++    getters.
++ 
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  int prepare_info_for_read()
++  {
++    return (do_prepare_info_for_read());
++  }
++
++  /**
++    Enables the storage system to receive writes, i.e.
++    setters.
++ 
++    @retval FALSE No error
++    @retval TRUE  Failure
++  */
++  int prepare_info_for_write()
++  {
++    return (do_prepare_info_for_write());
++  }
++
++  /**
++    Sets the value of a field to @c value.
++    Any call must be done in the right order which
++    is defined by the caller that wants to persist
++    the information.
++
++    @param[in] value Value to be set.
++
++    @retval FALSE No error
++    @retval TRUE Failure
++  */
++  template <class TypeHandler>
++  bool set_info(TypeHandler const value)
++  {
++    if (cursor >= ninfo || prv_error)
++      return TRUE;
++
++    if (!(prv_error= do_set_info(cursor, value)))
++      cursor++;
++
++    return(prv_error);
++  }
++
++  /**
++    Returns the value of a field.
++    Any call must be done in the right order which
++    is defined by the caller that wants to return
++    the information.
++
++    @param[in] value Value to be set.
++    @param[in] default_value Returns a default value
++                             if the field is empty.
++
++    @retval FALSE No error
++    @retval TRUE Failure
++  */
++  template <class TypeHandlerPointer, class TypeHandler>
++  bool get_info(TypeHandlerPointer value,
++                TypeHandler const default_value)
++  {
++    if (cursor >= ninfo || prv_error)
++      return TRUE;
++
++    if (!(prv_error= do_get_info(cursor, value, default_value)))
++      cursor++;
++
++    return(prv_error);
++  }
++
++  /**
++    Returns the value of a string field.
++    Any call must be done in the right order which
++    is defined by the caller that wants to return
++    the information.
++
++    @param[in] value Value to be returned.
++    @param[in] size  Max size of the string to be
++                     returned.
++    @param[in] default_value Returns a default value
++                             if the field is empty.
++
++    @retval FALSE No error
++    @retval TRUE Failure
++  */
++  bool get_info(char *value, const size_t size,
++                const char *default_value)
++  {
++    if (cursor >= ninfo || prv_error)
++      return TRUE;
++
++    if (!(prv_error= do_get_info(cursor, value, size, default_value)))
++      cursor++;
++
++    return(prv_error);
++  }
++ 
++  /**
++    Returns the value of a Server_id field.
++    Any call must be done in the right order which
++    is defined by the caller that wants to return
++    the information.
++
++    @param[out] value Value to be return.
++    @param[in] default_value Returns a default value
++                             if the field is empty.
++
++    @retval FALSE No error
++    @retval TRUE Failure
++  */
++  bool get_info(Server_ids *value,
++                const Server_ids *default_value)
++  {
++    if (cursor >= ninfo || prv_error)
++      return TRUE;
++
++    if (!(prv_error= do_get_info(cursor, value, default_value)))
++      cursor++;
++
++    return(prv_error);
++  }
++
++  /**
++    Returns the number of fields handled by this handler.
++
++    @return Number of fields handled by the handler.
++  */
++  int get_number_info() { return ninfo; }
++
++  /**
++    Configures the number of events after which the info (e.g.
++    master info, relay log info) must be synced when flush() is
++    called.
++ 
++    @param[in] period Number of events.
++  */
++  void set_sync_period(uint period)
++  {
++    sync_period= period; 
++  }
++
++  /**
++    Returns a string describing the repository. For instance, if the
++    repository is a file, the returned string is path where data is
++    stored.
++
++    @return a pointer to a string.
++  */
++  char *get_description_info()
++  {
++    return (do_get_description_info());
++  }
++
++  /**
++    Any transactional repository may have its updates rolled back in case
++    of a failure. If this is possible, the repository is classified as
++    transactional.
++
++    @retval TRUE If transactional.
++    @retval FALSE Otherwise.
++  */
++  bool is_transactional() { return do_is_transactional(); }
++
++  /*                                                                                                                                    
++    Pre-store information before writing it to the repository and if
++    necessary after reading it from the repository. The decision is
++    delegated to the sub-classes.
++  */
++  Rpl_info_values *field_values;
++
++protected:
++  /* Number of fields to be stored in the repository. */
++  int ninfo;
++
++  /* From/To where we should start reading/writing. */
++  int cursor;
++
++  /* Registers if there was failure while accessing a field/information. */
++  bool prv_error;
++
++  /*
++   Keeps track of the number of events before fsyncing. The option
++   --sync-master-info and --sync-relay-log-info determine how many
++   events should be processed before fsyncing.
++  */
++  uint sync_counter;
++
++  /*
++   The number of events after which we should fsync.
++  */
++  uint sync_period;
++
++private:
++  virtual int do_init_info()= 0;
++  virtual int do_check_info()= 0;
++  virtual int do_flush_info(const bool force)= 0;
++  virtual int do_remove_info()= 0;
++  virtual void do_end_info()= 0;
++  virtual int do_prepare_info_for_read()= 0;
++  virtual int do_prepare_info_for_write()= 0;
++
++  virtual bool do_set_info(const int pos, const char *value)= 0;
++  virtual bool do_set_info(const int pos, const ulong value)= 0;
++  virtual bool do_set_info(const int pos, const int value)= 0;
++  virtual bool do_set_info(const int pos, const float value)= 0;
++  virtual bool do_set_info(const int pos, const Server_ids *value)= 0;
++  virtual bool do_get_info(const int pos, char *value, const size_t size,
++                           const char *default_value)= 0;
++  virtual bool do_get_info(const int pos, ulong *value,
++                           const ulong default_value)= 0;
++  virtual bool do_get_info(const int pos, int *value,
++                           const int default_value)= 0;
++  virtual bool do_get_info(const int pos, float *value,
++                           const float default_value)= 0;
++  virtual bool do_get_info(const int pos, Server_ids *value,
++                           const Server_ids *default_value)= 0;
++  virtual char* do_get_description_info()= 0;
++  virtual bool do_is_transactional()= 0;
++
++  Rpl_info_handler& operator=(const Rpl_info_handler& handler);
++  Rpl_info_handler(const Rpl_info_handler& handler);
++};
++#endif /* RPL_INFO_HANDLER_H */
+Index: sql/sql_parse.cc
+===================================================================
+--- sql/sql_parse.cc	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_parse.cc	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -261,7 +261,8 @@
+                                             CF_CAN_GENERATE_ROW_EVENTS;
+   sql_command_flags[SQLCOM_CREATE_INDEX]=   CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
+   sql_command_flags[SQLCOM_ALTER_TABLE]=    CF_CHANGES_DATA | CF_WRITE_LOGS_COMMAND |
+-                                            CF_AUTO_COMMIT_TRANS;
++                                            CF_AUTO_COMMIT_TRANS |
++                                            CF_WRITE_RPL_INFO_COMMAND;
+   sql_command_flags[SQLCOM_TRUNCATE]=       CF_CHANGES_DATA | CF_WRITE_LOGS_COMMAND |
+                                             CF_AUTO_COMMIT_TRANS;
+   sql_command_flags[SQLCOM_DROP_TABLE]=     CF_CHANGES_DATA | CF_AUTO_COMMIT_TRANS;
+@@ -383,10 +384,14 @@
+     The following admin table operations are allowed
+     on log tables.
+   */
+-  sql_command_flags[SQLCOM_REPAIR]=    CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS;
+-  sql_command_flags[SQLCOM_OPTIMIZE]|= CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS;
+-  sql_command_flags[SQLCOM_ANALYZE]=   CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS;
+-  sql_command_flags[SQLCOM_CHECK]=     CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS;
++  sql_command_flags[SQLCOM_REPAIR]=    CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS |
++  									   CF_WRITE_RPL_INFO_COMMAND;
++  sql_command_flags[SQLCOM_OPTIMIZE]|= CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS |
++  									   CF_WRITE_RPL_INFO_COMMAND;
++  sql_command_flags[SQLCOM_ANALYZE]=   CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS |
++  									   CF_WRITE_RPL_INFO_COMMAND;
++  sql_command_flags[SQLCOM_CHECK]=     CF_WRITE_LOGS_COMMAND | CF_AUTO_COMMIT_TRANS |
++  									   CF_WRITE_RPL_INFO_COMMAND;
+ 
+   sql_command_flags[SQLCOM_CREATE_USER]|=       CF_AUTO_COMMIT_TRANS;
+   sql_command_flags[SQLCOM_DROP_USER]|=         CF_AUTO_COMMIT_TRANS;
+@@ -428,6 +433,17 @@
+   return (sql_command_flags[command] & CF_WRITE_LOGS_COMMAND) != 0;
+ }
+ 
++/**
++  Check if a sql command is allowed to write to rpl info tables.
++  @param command The SQL command
++  @return true if writing is allowed
++*/
++bool is_rpl_info_table_write_query(enum enum_sql_command command)
++{
++  DBUG_ASSERT(command >= 0 && command <= SQLCOM_END);
++  return (sql_command_flags[command] & CF_WRITE_RPL_INFO_COMMAND) != 0;
++}
++
+ void execute_init_command(THD *thd, LEX_STRING *init_command,
+                           mysql_rwlock_t *var_lock)
+ {
+Index: sql/CMakeLists.txt
+===================================================================
+--- sql/CMakeLists.txt	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/CMakeLists.txt	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -76,7 +76,8 @@
+                sql_profile.cc event_parse_data.cc sql_alter.cc
+                sql_signal.cc rpl_handler.cc mdl.cc sql_admin.cc
+                transaction.cc sys_vars.cc sql_truncate.cc datadict.cc
+-               sql_reload.cc
++               sql_reload.cc rpl_info_handler.cc rpl_info_table.cc
++               rpl_info_table_access.cc rpl_info_values.cc rpl_info_fake.cc
+                ${GEN_SOURCES}
+                ${MYSYS_LIBWRAP_SOURCE})
+ 
+Index: sql/sql_base.h
+===================================================================
+--- sql/sql_base.h	(.../mysql-5.5.20_relay.info_table)	(revision 493)
++++ sql/sql_base.h	(.../mysql-5.5.20.batch_commit)	(revision 632)
+@@ -128,6 +128,13 @@
+ */
+ #define MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK         0x1000
+ 
++/**
++  When opening or locking a replication table through an internal
++  operation rather than explicitly through an user thread.
++*/
++#define MYSQL_LOCK_RPL_INFO_TABLE               0x2000
++
++
+ /** Please refer to the internals manual. */
+ #define MYSQL_OPEN_REOPEN  (MYSQL_OPEN_IGNORE_FLUSH |\
+                             MYSQL_OPEN_IGNORE_GLOBAL_READ_LOCK |\

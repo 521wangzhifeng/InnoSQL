@@ -1,0 +1,375 @@
+Index: storage/innobase/handler/ha_innodb.cc
+===================================================================
+--- storage/innobase/handler/ha_innodb.cc	(revision 499)
++++ storage/innobase/handler/ha_innodb.cc	(working copy)
+@@ -156,6 +156,7 @@
+ 
+ static ulong	innobase_fast_shutdown			= 1;
+ static my_bool	innobase_file_format_check		= TRUE;
++static my_bool	innobase_use_speed_recover		= FALSE;
+ #ifdef UNIV_LOG_ARCHIVE
+ static my_bool	innobase_log_archive			= FALSE;
+ static char*	innobase_log_arch_dir			= NULL;
+@@ -2461,6 +2462,7 @@
+ 	srv_log_buffer_size = (ulint) innobase_log_buffer_size;
+ 
+ 	srv_buf_pool_size = (ulint) innobase_buffer_pool_size;
++	srv_use_speed_recover = (ibool)innobase_use_speed_recover;
+ 	srv_buf_pool_instances = (ulint) innobase_buffer_pool_instances;
+ 
+ 	srv_mem_pool_size = (ulint) innobase_additional_mem_pool_size;
+@@ -11171,6 +11173,11 @@
+   "Whether to perform system file format check.",
+   NULL, NULL, TRUE);
+ 
++static MYSQL_SYSVAR_BOOL(use_speed_recover, innobase_use_speed_recover,	
++	PLUGIN_VAR_READONLY,
++	"Whether to use the speed recover",	
++	NULL, NULL, FALSE);
++
+ /* If a new file format is introduced, the file format
+ name needs to be updated accordingly. Please refer to
+ file_format_name_map[] defined in trx0sys.c for the next
+@@ -11456,6 +11463,7 @@
+   MYSQL_SYSVAR(file_per_table),
+   MYSQL_SYSVAR(file_format),
+   MYSQL_SYSVAR(file_format_check),
++  MYSQL_SYSVAR(use_speed_recover),
+   MYSQL_SYSVAR(file_format_max),
+   MYSQL_SYSVAR(flush_log_at_trx_commit),
+   MYSQL_SYSVAR(flush_method),
+Index: storage/innobase/include/log0recv.h
+===================================================================
+--- storage/innobase/include/log0recv.h	(revision 499)
++++ storage/innobase/include/log0recv.h	(working copy)
+@@ -31,6 +31,7 @@
+ #include "buf0types.h"
+ #include "hash0hash.h"
+ #include "log0log.h"
++#include "ut0rbt.h"
+ 
+ #ifdef UNIV_HOTBACKUP
+ extern ibool	recv_replay_file_ops;
+@@ -436,6 +437,8 @@
+ 	mem_heap_t*	heap;	/*!< memory heap of log records and file
+ 				addresses*/
+ 	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
++
++	ib_rbt_t*	addr_rbt;
+ 	ulint		n_addrs;/*!< number of not processed hashed file
+ 				addresses in the hash table */
+ };
+Index: storage/innobase/include/srv0srv.h
+===================================================================
+--- storage/innobase/include/srv0srv.h	(revision 499)
++++ storage/innobase/include/srv0srv.h	(working copy)
+@@ -154,6 +154,7 @@
+ #else
+ extern ibool	srv_use_sys_malloc;
+ #endif /* UNIV_HOTBACKUP */
++extern ibool	srv_use_speed_recover;
+ extern ulint	srv_buf_pool_size;	/*!< requested size in bytes */
+ extern ulint    srv_buf_pool_instances; /*!< requested number of buffer pool instances */
+ extern ulint	srv_buf_pool_old_size;	/*!< previously requested size */
+Index: storage/innobase/log/log0recv.c
+===================================================================
+--- storage/innobase/log/log0recv.c	(revision 499)
++++ storage/innobase/log/log0recv.c	(working copy)
+@@ -201,6 +201,10 @@
+ 			hash_table_free(recv_sys->addr_hash);
+ 		}
+ 
++		if (recv_sys->addr_rbt != NULL) {
++			rbt_free(recv_sys->addr_rbt);
++		}
++
+ 		if (recv_sys->heap != NULL) {
+ 			mem_heap_free(recv_sys->heap);
+ 		}
+@@ -232,6 +236,10 @@
+ 			hash_table_free(recv_sys->addr_hash);
+ 		}
+ 
++		if (recv_sys->addr_rbt != NULL) {
++			rbt_free(recv_sys->addr_rbt);
++		}
++
+ 		if (recv_sys->heap != NULL) {
+ 			mem_heap_free(recv_sys->heap);
+ 		}
+@@ -291,6 +299,18 @@
+ }
+ #endif /* !UNIV_HOTBACKUP */
+ 
++static 
++int
++recv_addr_cmp(const void *p1, const void *p2)
++{
++	const recv_addr_t *r1 = *(recv_addr_t**)p1;
++	const recv_addr_t *r2 = *(recv_addr_t**)p2;
++	ut_ad(r1 != NULL);
++	ut_ad(r2 != NULL);
++	if (r1->space > r2->space) return (1);
++	else if(r1->space == r2->space) return (r1->page_no - r2->page_no);
++	else return (-1);
++}
+ /************************************************************
+ Inits the recovery system for a recovery operation. */
+ UNIV_INTERN
+@@ -332,6 +352,7 @@
+ 	recv_sys->recovered_offset = 0;
+ 
+ 	recv_sys->addr_hash = hash_create(available_memory / 512);
++	recv_sys->addr_rbt = rbt_create(sizeof(recv_addr_t*),recv_addr_cmp);
+ 	recv_sys->n_addrs = 0;
+ 
+ 	recv_sys->apply_log_recs = FALSE;
+@@ -369,9 +390,11 @@
+ 	}
+ 
+ 	hash_table_free(recv_sys->addr_hash);
++	rbt_free(recv_sys->addr_rbt);
+ 	mem_heap_empty(recv_sys->heap);
+ 
+ 	recv_sys->addr_hash = hash_create(buf_pool_get_curr_size() / 512);
++	recv_sys->addr_rbt = rbt_create(sizeof(recv_addr_t*),recv_addr_cmp);
+ }
+ 
+ #ifndef UNIV_HOTBACKUP
+@@ -386,6 +409,7 @@
+ 	mutex_enter(&(recv_sys->mutex));
+ 
+ 	hash_table_free(recv_sys->addr_hash);
++	rbt_free(recv_sys->addr_rbt);
+ 	mem_heap_free(recv_sys->heap);
+ 	ut_free(recv_sys->buf);
+ 	mem_free(recv_sys->last_block_buf_start);
+@@ -393,6 +417,7 @@
+ 	recv_sys->buf = NULL;
+ 	recv_sys->heap = NULL;
+ 	recv_sys->addr_hash = NULL;
++	recv_sys->addr_rbt = NULL;
+ 	recv_sys->last_block_buf_start = NULL;
+ 
+ 	mutex_exit(&(recv_sys->mutex));
+@@ -1382,6 +1407,7 @@
+ 
+ 		HASH_INSERT(recv_addr_t, addr_hash, recv_sys->addr_hash,
+ 			    recv_fold(space, page_no), recv_addr);
++		rbt_insert(recv_sys->addr_rbt, &recv_addr, &recv_addr);
+ 		recv_sys->n_addrs++;
+ #if 0
+ 		fprintf(stderr, "Inserting log rec for space %lu, page %lu\n",
+@@ -1740,10 +1766,11 @@
+ 				mutex */
+ {
+ 	recv_addr_t* recv_addr;
+-	ulint	i;
++	ulint	i = 0;
+ 	ulint	n_pages;
+ 	ibool	has_printed	= FALSE;
+ 	mtr_t	mtr;
++	const ib_rbt_node_t* rnode = NULL;
+ loop:
+ 	mutex_enter(&(recv_sys->mutex));
+ 
+@@ -1764,66 +1791,115 @@
+ 
+ 	recv_sys->apply_log_recs = TRUE;
+ 	recv_sys->apply_batch_on = TRUE;
+-
+-	for (i = 0; i < hash_get_n_cells(recv_sys->addr_hash); i++) {
+-
+-		recv_addr = HASH_GET_FIRST(recv_sys->addr_hash, i);
+-
+-		while (recv_addr) {
+-			ulint	space = recv_addr->space;
+-			ulint	zip_size = fil_space_get_zip_size(space);
+-			ulint	page_no = recv_addr->page_no;
+-
+-			if (recv_addr->state == RECV_NOT_PROCESSED) {
+-				if (!has_printed) {
+-					ut_print_timestamp(stderr);
+-					fputs("  InnoDB: Starting an"
+-					      " apply batch of log records"
+-					      " to the database...\n"
+-					      "InnoDB: Progress in percents: ",
+-					      stderr);
+-					has_printed = TRUE;
+-				}
+-
+-				mutex_exit(&(recv_sys->mutex));
+-
+-				if (buf_page_peek(space, page_no)) {
+-					buf_block_t*	block;
+-
+-					mtr_start(&mtr);
+-
+-					block = buf_page_get(
+-						space, zip_size, page_no,
+-						RW_X_LATCH, &mtr);
+-					buf_block_dbg_add_level(
+-						block, SYNC_NO_ORDER_CHECK);
+-
+-					recv_recover_page(FALSE, block);
+-					mtr_commit(&mtr);
+-				} else {
+-					recv_read_in_area(space, zip_size,
+-							  page_no);
+-				}
+-
+-				mutex_enter(&(recv_sys->mutex));
+-			}
+-
+-			recv_addr = HASH_GET_NEXT(addr_hash, recv_addr);
+-		}
+-
+-		if (has_printed
+-		    && (i * 100) / hash_get_n_cells(recv_sys->addr_hash)
+-		    != ((i + 1) * 100)
+-		    / hash_get_n_cells(recv_sys->addr_hash)) {
+-
+-			fprintf(stderr, "%lu ", (ulong)
+-				((i * 100)
+-				 / hash_get_n_cells(recv_sys->addr_hash)));
+-		}
++	if(srv_use_speed_recover)
++	{
++	  if (recv_sys->addr_rbt) 
++	  {
++	    rnode = rbt_first(recv_sys->addr_rbt);
++	    while(rnode != NULL)
++	    {
++	      ulint zip_size;
++	      ulint offset[1];
++	      recv_addr_t **addr = rbt_value(recv_addr_t*, rnode);
++	      ut_a(*addr);
++	      zip_size = fil_space_get_zip_size((*addr)->space);
++	      offset[0] = (*addr)->page_no;
++	      if ((*addr)->state == RECV_NOT_PROCESSED){
++	      	if(!has_printed){
++	      		ut_print_timestamp(stderr);
++	      		fputs("  InnoDB: Starting an"
++	      			" apply batch of log records"
++	      			" to the database...\n"
++	      			"InnoDB: Progress in percents: ",
++	      			stderr);
++	      		has_printed = TRUE;
++	      	}
++	      	mutex_exit(&(recv_sys->mutex));
++	      	if(buf_page_peek((*addr)->space,(*addr)->page_no)){
++	      	  buf_block_t * block;
++	      	  mtr_start(&mtr);
++	      	  block = buf_page_get(
++	      	  	(*addr)->space, zip_size, (*addr)->page_no,
++	      	  	RW_X_LATCH, &mtr);
++	      	  buf_block_dbg_add_level(
++	      	  	block, SYNC_NO_ORDER_CHECK);
++	      	  recv_recover_page(FALSE, block);
++	      	  mtr_commit(&mtr);
++	      	}else{
++	      	  (*addr)->state = RECV_BEING_READ;
++	      	  buf_read_recv_pages(FALSE,(*addr)->space,zip_size,offset,1);
++	      	}
++			mutex_enter(&(recv_sys->mutex));
++	      }
++	      if(has_printed
++	      	&&(i*100) / recv_sys->addr_rbt->n_nodes 
++	      	!= (i+1) * 100 / recv_sys->addr_rbt->n_nodes)
++	      {
++	      	fprintf(stderr, "%lu ", (ulong)((i*100)/recv_sys->addr_rbt->n_nodes));
++	      }
++	      i++;
++	      rnode = rbt_next(recv_sys->addr_rbt, rnode);
++	    }
++	  }
+ 	}
++	else
++	{
++	  for (i = 0; i < hash_get_n_cells(recv_sys->addr_hash); i++) {
++	  
++	  	recv_addr = HASH_GET_FIRST(recv_sys->addr_hash, i);
++	  
++	  	while (recv_addr) {
++	  	  ulint	space = recv_addr->space;
++	  	  ulint	zip_size = fil_space_get_zip_size(space);
++	  	  ulint	page_no = recv_addr->page_no;
++	  	  
++	  	  if (recv_addr->state == RECV_NOT_PROCESSED) {
++	  	  	if (!has_printed) {
++	  	  		ut_print_timestamp(stderr);
++	  	  		fputs("  InnoDB: Starting an"
++	  	  			" apply batch of log records"
++	  	  			" to the database...\n"
++	  	  			"InnoDB: Progress in percents: ",
++	  	  			stderr);
++	  	  		has_printed = TRUE;
++	  	  	}
++	  	  
++	  	  	mutex_exit(&(recv_sys->mutex));
++	  	  
++	  	  	if (buf_page_peek(space, page_no)) {
++	  	  		buf_block_t*	block;
++	  	  
++	  	  		mtr_start(&mtr);
++	  	  
++	  	  		block = buf_page_get(
++	  	  			space, zip_size, page_no,
++	  	  			RW_X_LATCH, &mtr);
++	  	  		buf_block_dbg_add_level(
++	  	  			block, SYNC_NO_ORDER_CHECK);
++	  	  
++	  	  		recv_recover_page(FALSE, block);
++	  	  		mtr_commit(&mtr);
++	  	  	} else {
++	  	  	  recv_read_in_area(space, zip_size,
++	  	  	  	page_no);
++	  	  	}  	  
++	  	  	mutex_enter(&(recv_sys->mutex));
++	  	  }  
++	  	  recv_addr = HASH_GET_NEXT(addr_hash, recv_addr);
++	  	}
++	  
++	  	if (has_printed
++	  		&& (i * 100) / hash_get_n_cells(recv_sys->addr_hash)
++	  		!= ((i + 1) * 100)
++	  		/ hash_get_n_cells(recv_sys->addr_hash)) {
++	  
++	  			fprintf(stderr, "%lu ", (ulong)
++	  				((i * 100)
++	  				/ hash_get_n_cells(recv_sys->addr_hash)));
++	  	}
++	  }
++	}
+ 
+-	/* Wait until all the pages have been processed */
+-
+ 	while (recv_sys->n_addrs != 0) {
+ 
+ 		mutex_exit(&(recv_sys->mutex));
+@@ -1833,11 +1909,6 @@
+ 		mutex_enter(&(recv_sys->mutex));
+ 	}
+ 
+-	if (has_printed) {
+-
+-		fprintf(stderr, "\n");
+-	}
+-
+ 	if (!allow_ibuf) {
+ 		/* Flush all the file pages to disk and invalidate them in
+ 		the buffer pool */
+Index: storage/innobase/srv/srv0srv.c
+===================================================================
+--- storage/innobase/srv/srv0srv.c	(revision 499)
++++ storage/innobase/srv/srv0srv.c	(working copy)
+@@ -204,6 +204,9 @@
+ 
+ /* use os/external memory allocator */
+ UNIV_INTERN my_bool	srv_use_sys_malloc	= TRUE;
++
++UNIV_INTERN ibool srv_use_speed_recover = FALSE;
++
+ /* requested size in kilobytes */
+ UNIV_INTERN ulint	srv_buf_pool_size	= ULINT_MAX;
+ /* requested number of buffer pool instances */

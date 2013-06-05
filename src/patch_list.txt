@@ -1,0 +1,14 @@
+innodb_flash_cache.patch
+innodb_io_enhance.patch
+innosql_5.5.20_trx_undo.patch
+mysql-5.5.20.binlog_userip.patch
+mysql-5.5.20.deadlock_non_recursive.patch
+mysql-5.5.20.io_stat.patch
+mysql-5.5.20.netease_xa.patch
+mysql-5.5.20.RBR.patch
+mysql-5.5.20.role_table_user_profiler.patch
+mysql-5.5.20.seq_recv.patch
+mysql-5.5.20.shm_and_lru_dump.patch
+mysql-5.5.20.sync_replication.patch
+mysql-5.5.20.VSR.patch
+replication_filename_position_crash.patch
